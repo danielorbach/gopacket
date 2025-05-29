@@ -77,6 +77,7 @@ func testPacketLayers(t *testing.T, p gopacket.Packet, want []gopacket.LayerType
 	}
 }
 
+// TODO: test truncated chunks: Chunk.Length (INIT), Parameter.Length (INIT_ACK)
 
 // Packet with an INIT chunk (SCTPInit):
 //

@@ -111,6 +111,8 @@ func roundUpToNearest4(i int) int {
 	return i + 4 - (i % 4)
 }
 
+// TODO(@danielorbach): feedback if chunk is truncated.
+
 func decodeSCTPChunk(data []byte) (SCTPChunk, error) {
 	length := binary.BigEndian.Uint16(data[2:4])
 	if length < 4 {
