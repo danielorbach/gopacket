@@ -184,25 +184,25 @@ func decodeSCTPChunkTypeUnknown(data []byte, p gopacket.PacketBuilder) error {
 }
 
 // SerializeTo is for gopacket.SerializableLayer.
-func (s SCTPUnknownChunkType) SerializeTo(b gopacket.SerializeBuffer, opts gopacket.SerializeOptions) error {
-	bytes, err := b.PrependBytes(s.ActualLength)
+func (sc SCTPUnknownChunkType) SerializeTo(b gopacket.SerializeBuffer, opts gopacket.SerializeOptions) error {
+	bytes, err := b.PrependBytes(sc.ActualLength)
 	if err != nil {
 		return err
 	}
-	copy(bytes, s.bytes)
+	copy(bytes, sc.bytes)
 	return nil
 }
 
 // LayerType returns gopacket.LayerTypeSCTPUnknownChunkType.
-func (s *SCTPUnknownChunkType) LayerType() gopacket.LayerType { return LayerTypeSCTPUnknownChunkType }
+func (sc *SCTPUnknownChunkType) LayerType() gopacket.LayerType { return LayerTypeSCTPUnknownChunkType }
 
 // Payload returns all bytes in this header, including the decoded Type, Length,
 // and Flags.
-func (s *SCTPUnknownChunkType) Payload() []byte { return s.bytes }
+func (sc *SCTPUnknownChunkType) Payload() []byte { return sc.bytes }
 
 // Error implements ErrorLayer.
-func (s *SCTPUnknownChunkType) Error() error {
-	return fmt.Errorf("No decode method available for SCTP chunk type %s", s.Type)
+func (sc *SCTPUnknownChunkType) Error() error {
+	return fmt.Errorf("No decode method available for SCTP chunk type %s", sc.Type)
 }
 
 // SCTPData is the SCTP Data chunk layer.
@@ -216,7 +216,7 @@ type SCTPData struct {
 }
 
 // LayerType returns gopacket.LayerTypeSCTPData.
-func (s *SCTPData) LayerType() gopacket.LayerType { return LayerTypeSCTPData }
+func (sc *SCTPData) LayerType() gopacket.LayerType { return LayerTypeSCTPData }
 
 // SCTPPayloadProtocol represents a payload protocol
 type SCTPPayloadProtocol uint32
