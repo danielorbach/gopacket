@@ -10,9 +10,8 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"hash/crc32"
-
 	"github.com/google/gopacket"
+	"hash/crc32"
 )
 
 // SCTP contains information on the top level of an SCTP packet.
