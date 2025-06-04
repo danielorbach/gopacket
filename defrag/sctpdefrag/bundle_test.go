@@ -2,11 +2,62 @@ package sctpdefrag_test
 
 import (
 	"encoding/hex"
+	"fmt"
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/defrag/sctpdefrag"
 	"github.com/google/gopacket/layers"
 	"testing"
 )
+
+func ExampleChunkBundle() {
+	// This packet contains an SCTP SACK chunk followed by an SCTP DATA chunk.
+	//
+	// The SACK chunk occupies 16 bytes, followed by 24 bytes of the DATA chunk. The
+	// DATA chunk contains 16 bytes of header followed by 7 bytes of payload and 1
+	// byte of padding.
+	packetData := []byte{
+		0x03, 0x00, 0x00, 0x10, 0x03, 0xfe, 0x3c, 0x19,
+		0x00, 0x00, 0xbb, 0x80, 0x00, 0x00, 0x00, 0x00,
+		0x00, 0x03, 0x00, 0x17, 0xe1, 0x53, 0x41, 0x3e,
+		0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x12,
+		0x20, 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff, 0x00,
+	}
+
+	// An sctpdefrag.ChunkBundle implements gopacket.DecodingLayer so it can be
+	// decoded from a byte slice.
+	var chunks sctpdefrag.ChunkBundle
+	var offset int // Used to identify the input data inside loop iterations.
+	// This loop resembles the decoding loop within gopacket.DecodingLayerParser. It
+	// decodes the first portion of the data buffer and then continues decoding from
+	// the next chunk.
+	for len(packetData) != 0 {
+		// DecodeFromBytes() is the main decoding function. When it returns a nil error,
+		// the chunk has been decoded successfully and is now accessible via the Header,
+		// Chunk and Layer functions.
+		err := chunks.DecodeFromBytes(packetData, gopacket.NilDecodeFeedback)
+		if err != nil {
+			panic(err)
+		}
+		fmt.Printf("Found chunk %v at offset %v\n", chunks.LayerType(), offset)
+		fmt.Println(gopacket.LayerDump(&chunks))
+		// The LayerContents() function returns the raw bytes of the entire chunk,
+		// including the payload carried by DATA chunks.
+		offset += len(chunks.LayerContents())
+		// The LayerPayload() function returns the raw bytes containing the next chunk
+		// if there is any.
+		packetData = chunks.LayerPayload()
+	}
+
+	// Output:
+	// Found chunk SCTPSack at offset 0
+	// SCTPSack	{Contents=[..16..] Payload=[..24..] Type=Sack Flags=0 Length=16 ActualLength=16 CumulativeTSNAck=66993177 AdvertisedReceiverWindowCredit=48000 NumGapACKs=0 NumDuplicateTSNs=0 GapACKs=[] DuplicateTSNs=[]}
+	// 00000000  03 00 00 10 03 fe 3c 19  00 00 bb 80 00 00 00 00  |......<.........|
+	//
+	// Found chunk SCTPData at offset 16
+	// SCTPData	{Contents=[..16..] Payload=[..7..] Type=Data Flags=3 Length=23 ActualLength=16 Unordered=false BeginFragment=true EndFragment=true TSN=3780329790 StreamId=0 StreamSequence=1 PayloadProtocol=S1AP}
+	// 00000000  00 03 00 17 e1 53 41 3e  00 00 00 01 00 00 00 12  |.....SA>........|
+	// 00000010  20 aa bb cc dd ee ff                              | ......|
+}
 
 func TestDecodingBundledChunks(t *testing.T) {
 	var tests = []struct {

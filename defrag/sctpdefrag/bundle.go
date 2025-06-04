@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/layers"
+	"strings"
 )
 
 // ChunkBundle implements a decoding layer used to handle various SCTP chunk
@@ -139,6 +140,8 @@ func (l *ChunkBundle) Header() layers.SCTPChunk {
 
 // Layer checks whether the currently decoded chunk matches the specified layer
 // type. It returns the decoded chunk layer if it matches, or nil if it does not.
+//
+// This function is the same as Chunk.
 func (l *ChunkBundle) Layer(layerType gopacket.LayerType) gopacket.Layer {
 	if !l.valid {
 		return nil
@@ -146,6 +149,20 @@ func (l *ChunkBundle) Layer(layerType gopacket.LayerType) gopacket.Layer {
 	c := l.chunkLayer()
 	if c.LayerType() == layerType {
 		return c
+	}
+	return nil
+}
+
+// Chunk checks whether the currently decoded chunk matches the specified chunk
+// type. It returns the decoded chunk layer if it matches, or nil if it does not.
+//
+// This function is the same as Layer.
+func (l *ChunkBundle) Chunk(chunkType layers.SCTPChunkType) gopacket.Layer {
+	if !l.valid {
+		return nil
+	}
+	if l.chunkType == chunkType {
+		return l.chunkLayer()
 	}
 	return nil
 }
@@ -227,4 +244,21 @@ func (l *ChunkBundle) LayerContents() []byte {
 		return nil
 	}
 	return l.content
+}
+
+// String returns a string representation of the current chunk, or "<invalid>" if
+// the layer is not in a valid state.
+//
+// The string representation is the same as the string representation of the
+// underlying chunk layer, as defined by gopacket.
+func (l *ChunkBundle) String() string {
+	if !l.valid {
+		return "<invalid>"
+	}
+	// We want to preserve the original formatting of the chunk.
+	ls := gopacket.LayerString(l.chunkLayer())
+	// But it opens with the chunk type, which will be prepended when this
+	// ChunkBundle itself is passed to LayerString.
+	_, s, _ := strings.Cut(ls, "\t")
+	return s
 }
