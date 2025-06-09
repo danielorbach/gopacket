@@ -1,7 +1,7 @@
 package sctpdefrag
 
 import (
-	"fmt"
+	"errors"
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/layers"
 	"strings"
@@ -46,7 +46,7 @@ func (l *ChunkBundle) DecodeFromBytes(data []byte, df gopacket.DecodeFeedback) e
 	// Failing to decode from bytes leaves the layer in an invalid state.
 	l.valid = false
 	if len(data) == 0 {
-		return fmt.Errorf("no data to decode")
+		return errors.New("no packet data to decode")
 	}
 	err := l.decodeChunk(data, df)
 	if err != nil {
@@ -66,10 +66,11 @@ func (l *ChunkBundle) DecodeFromBytes(data []byte, df gopacket.DecodeFeedback) e
 	// set truncated but return a nil error.
 	if len(data) < int(length) {
 		df.SetTruncated()
+		l.content = data
 		l.next = nil
 		return nil
 	}
-	l.content = data[:l.Header().Length]
+	l.content = data[:length]
 	l.next = data[length:]
 	return nil
 }
