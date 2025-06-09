@@ -56,7 +56,7 @@ func ExampleChunkBundle() {
 	// Found chunk SCTPData at offset 16
 	// SCTPData	{Contents=[..16..] Payload=[..7..] Type=Data Flags=3 Length=23 ActualLength=16 Unordered=false BeginFragment=true EndFragment=true TSN=3780329790 StreamId=0 StreamSequence=1 PayloadProtocol=S1AP}
 	// 00000000  00 03 00 17 e1 53 41 3e  00 00 00 01 00 00 00 12  |.....SA>........|
-	// 00000010  20 aa bb cc dd ee ff                              | ......|
+	// 00000010  20 aa bb cc dd ee ff 00                           | .......|
 }
 
 func TestDecodingBundledChunks(t *testing.T) {
@@ -143,25 +143,75 @@ func mustDecodeHexString(s string) []byte {
 	return b
 }
 
-func TestDecodingUnalignedData(t *testing.T) {
+// TestDecodingWithPadding ensures that packets with padding are decoded
+// properly. It works in tandem with TestDecodingWithoutPadding to ensure that a
+// chunk is successfully decoded if and only if it has sufficient padding.
+func TestDecodingWithPadding(t *testing.T) {
+	// This packet data contains 16 bytes for the chunk + 7 bytes of valid S1AP
+	// payload (MMEConfigurationUpdateAcknowledge) + 1 byte of padding.
+	const packetData = "00030017e153413e0000000100000012201e000300000000"
+	var chunks sctpdefrag.ChunkBundle
+	err := chunks.DecodeFromBytes(mustDecodeHexString(packetData), gopacket.NilDecodeFeedback)
+	if err != nil {
+		t.Errorf("DecodeFromBytes() = %v", err)
+	}
+	// The LayerContents() function returns the raw bytes of the chunk's header,
+	// including the payload of DATA chunks.
+	contents := chunks.LayerContents()
+	if len(contents) != 24 {
+		t.Errorf("LayerContents() = %v, want 24", len(contents))
+	}
+	// The LayerPayload() function returns the raw bytes of the next chunk, if any.
+	payload := chunks.LayerPayload()
+	if len(payload) != 0 {
+		t.Errorf("LayerPayload() = %v, want 0", len(payload))
+	}
+}
+
+// TestDecodingWithoutPadding ensures that packets without padding are NOT
+// decoded properly.
+//
+// When encountered with unpadded packets, there are two options:
+//
+//  1. If the chunk is the last in the packet, then it will be detected as
+//     truncated.
+//  2. If the chunk is not last in the packet, and it was not padded
+//     appropriately, then we treat some bytes of the next chunk as padding.
+//
+// Either way, decoding the entire packet will either succeed with a truncated
+// chunk or fail in the next chunk after the unpadded one.
+func TestDecodingWithoutPadding(t *testing.T) {
 	// This packet data contains 16 bytes for the chunk + 7 bytes of valid S1AP
 	// payload (MMEConfigurationUpdateAcknowledge). This results in 23 bytes, but a
 	// valid SCTP packet must contain 24 bytes.
 	const packetData = "00030017e153413e0000000100000012201e0003000000"
 	var chunks sctpdefrag.ChunkBundle
-	err := chunks.DecodeFromBytes(mustDecodeHexString(packetData), gopacket.NilDecodeFeedback)
-	if err == nil {
-		t.Errorf("DecodeFromBytes() = nil, want a non-nil error")
-		t.Log("The decoded chunk:\n", gopacket.LayerDump(&chunks))
+	var truncated boolDecodeFeedback
+	err := chunks.DecodeFromBytes(mustDecodeHexString(packetData), &truncated)
+	if err != nil {
+		t.Fatalf("DecodeFromBytes() = %v", err)
+	}
+	// An unpadded chunk is, in fact, a special-case of truncated chunks.
+	if !truncated {
+		t.Errorf("DecodeFromBytes did not mark the ill-padded chunk as truncated")
+	}
+	// However, the UserData of the DATA chunk is decoded successfully.
+	userData := chunks.Layer(layers.LayerTypeSCTPData).(*layers.SCTPData).Payload
+	if len(userData) != 7 {
+		t.Errorf("UserData = %v bytes, want 7 bytes", len(userData))
 	}
 }
 
-func TestDecodingPadding(t *testing.T) {}
-
+// TestDecodingTruncatedData ensures the package behaves consistently when faced
+// with truncated packet data.
+//
+// This test overlaps with TestDecodingWithoutPadding, but it is different
+// because its data is aligned to the 4-byte boundary.
 func TestDecodingTruncatedData(t *testing.T) {
 	// This DATA chunk header (first 16 bytes) indicates a payload of 7 bytes, but
-	// we've truncated the last byte off the payload.
-	const packetData = "00030017e153413e0000000100000012aabbccddeeff"
+	// we've truncated the last three bytes off the payload (we must keep the size of
+	// truncated data a multiple of 4).
+	const packetData = "00030017e153413e0000000100000012201e0003"
 	var chunks sctpdefrag.ChunkBundle
 	var truncated boolDecodeFeedback
 	err := chunks.DecodeFromBytes(mustDecodeHexString(packetData), &truncated)
