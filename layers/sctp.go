@@ -112,39 +112,46 @@ func roundUpToNearest4(i int) int {
 	return i + 4 - (i % 4)
 }
 
-// decodeSCTPChunk decodes the SCTP chunk header from the given data. It returns
-// a non-nil error if the data is too short or if the length is invalid,
-// indicating the data is truncated.
-func decodeSCTPChunk(data []byte) (SCTPChunk, error) {
+// DecodeFromBytes decodes the part of an SCTP chunk that are common to all
+// chunks. The specification refers to this as the "chunk header".
+//
+// The chunk layers in this file each decode the "chunk-specific" content.
+func (c *SCTPChunk) decodeFromBytes(data []byte, df gopacket.DecodeFeedback) error {
 	if len(data) < 4 {
-		return SCTPChunk{}, errors.New("insufficient data for SCTP chunk header")
+		df.SetTruncated()
+		return errors.New("insufficient data for SCTP chunk header")
 	}
-	length := binary.BigEndian.Uint16(data[2:4])
-	if length < 4 {
-		return SCTPChunk{}, errors.New("invalid SCTP chunk length")
-	}
-
 	// The Length field in the SCTP chunk header counts from the first byte (that's
 	// the ChunkType field) until the first byte of the next chunk, if any.
 	//
 	// It includes any variable-length data (parameters, user-data) and excludes any
 	// padding to the next 4-byte boundary.
+	length := binary.BigEndian.Uint16(data[2:4])
+	if length < 4 {
+		return errors.New("invalid SCTP chunk length")
+	}
+	if len(data) < int(length) {
+		df.SetTruncated()
+		return errors.New("invalid SCTP chunk data: not enough bytes")
+	}
+	// The actual length of the SCTP chunk is computed to align the Length field to a
+	// 4-byte boundary, in accordance with the SCTP specification.
 	//
-	// We ensure the given data is indeed padded appropriately, otherwise we'd be
-	// successfully decoding unpadded DATA chunks, though those SerializeTo properly
-	// padded packets.
+	// We must fail if the given data is not padded appropriately, otherwise we'd be
+	// successfully decoding unpadded or ill-padded DATA chunks, though those
+	// SerializeTo properly padded packets.
 	actual := roundUpToNearest4(int(length))
 	if len(data) < actual {
-		return SCTPChunk{}, errors.New("invalid SCTP chunk data: not enough bytes")
+		df.SetTruncated()
+		return errors.New("invalid SCTP chunk data: not enough padding")
 	}
 
-	return SCTPChunk{
-		Type:         SCTPChunkType(data[0]),
-		Flags:        data[1],
-		Length:       length,
-		ActualLength: actual,
-		BaseLayer:    BaseLayer{data[:actual], data[actual:]},
-	}, nil
+	c.Type = SCTPChunkType(data[0])
+	c.Flags = data[1]
+	c.Length = length
+	c.ActualLength = actual
+	c.BaseLayer = BaseLayer{data[:actual], data[actual:]}
+	return nil
 }
 
 // SCTPParameter is a TLV parameter inside a SCTPChunk.
@@ -200,12 +207,10 @@ func decodeSCTPChunkTypeUnknown(data []byte, p gopacket.PacketBuilder) error {
 }
 
 func (sc *SCTPUnknownChunkType) DecodeFromBytes(data []byte, df gopacket.DecodeFeedback) error {
-	chunk, err := decodeSCTPChunk(data)
+	err := sc.SCTPChunk.decodeFromBytes(data, df)
 	if err != nil {
-		df.SetTruncated()
 		return err
 	}
-	sc.SCTPChunk = chunk
 	sc.bytes = data[:sc.ActualLength]
 	return nil
 }
@@ -342,14 +347,10 @@ func decodeSCTPData(data []byte, p gopacket.PacketBuilder) error {
 }
 
 func (sc *SCTPData) DecodeFromBytes(data []byte, df gopacket.DecodeFeedback) error {
-	// The chunk's Length field references length in bytes of the data, INCLUDING the
-	// 16-byte header.
-	chunk, err := decodeSCTPChunk(data)
+	err := sc.SCTPChunk.decodeFromBytes(data, df)
 	if err != nil {
-		df.SetTruncated()
 		return err
 	}
-	sc.SCTPChunk = chunk
 	sc.Unordered = data[1]&0x4 != 0
 	sc.BeginFragment = data[1]&0x2 != 0
 	sc.EndFragment = data[1]&0x1 != 0
@@ -435,12 +436,10 @@ func decodeSCTPInit(data []byte, p gopacket.PacketBuilder) error {
 }
 
 func (sc *SCTPInit) DecodeFromBytes(data []byte, df gopacket.DecodeFeedback) error {
-	chunk, err := decodeSCTPChunk(data)
+	err := sc.SCTPChunk.decodeFromBytes(data, df)
 	if err != nil {
-		df.SetTruncated()
 		return err
 	}
-	sc.SCTPChunk = chunk
 	sc.InitiateTag = binary.BigEndian.Uint32(data[4:8])
 	sc.AdvertisedReceiverWindowCredit = binary.BigEndian.Uint32(data[8:12])
 	sc.OutboundStreams = binary.BigEndian.Uint16(data[12:14])
@@ -513,12 +512,10 @@ func decodeSCTPSack(data []byte, p gopacket.PacketBuilder) error {
 }
 
 func (sc *SCTPSack) DecodeFromBytes(data []byte, df gopacket.DecodeFeedback) error {
-	chunk, err := decodeSCTPChunk(data)
+	err := sc.SCTPChunk.decodeFromBytes(data, df)
 	if err != nil {
-		df.SetTruncated()
 		return err
 	}
-	sc.SCTPChunk = chunk
 	sc.CumulativeTSNAck = binary.BigEndian.Uint32(data[4:8])
 	sc.AdvertisedReceiverWindowCredit = binary.BigEndian.Uint32(data[8:12])
 	sc.NumGapACKs = binary.BigEndian.Uint16(data[12:14])
@@ -614,12 +611,10 @@ func decodeSCTPHeartbeat(data []byte, p gopacket.PacketBuilder) error {
 }
 
 func (sc *SCTPHeartbeat) DecodeFromBytes(data []byte, df gopacket.DecodeFeedback) error {
-	chunk, err := decodeSCTPChunk(data)
+	err := sc.SCTPChunk.decodeFromBytes(data, df)
 	if err != nil {
-		df.SetTruncated()
 		return err
 	}
-	sc.SCTPChunk = chunk
 	paramData := data[4:sc.Length]
 	for len(paramData) > 0 {
 		p := SCTPHeartbeatParameter(decodeSCTPParameter(paramData))
@@ -687,12 +682,10 @@ func decodeSCTPError(data []byte, p gopacket.PacketBuilder) error {
 
 func (sc *SCTPError) DecodeFromBytes(data []byte, df gopacket.DecodeFeedback) error {
 	// remarkably similar to decodeSCTPHeartbeat ;)
-	chunk, err := decodeSCTPChunk(data)
+	err := sc.SCTPChunk.decodeFromBytes(data, df)
 	if err != nil {
-		df.SetTruncated()
 		return err
 	}
-	sc.SCTPChunk = chunk
 	paramData := data[4:sc.Length]
 	for len(paramData) > 0 {
 		p := SCTPErrorParameter(decodeSCTPParameter(paramData))
@@ -750,12 +743,10 @@ func decodeSCTPShutdown(data []byte, p gopacket.PacketBuilder) error {
 }
 
 func (sc *SCTPShutdown) DecodeFromBytes(data []byte, df gopacket.DecodeFeedback) error {
-	chunk, err := decodeSCTPChunk(data)
+	err := sc.SCTPChunk.decodeFromBytes(data, df)
 	if err != nil {
-		df.SetTruncated()
 		return err
 	}
-	sc.SCTPChunk = chunk
 	sc.CumulativeTSNAck = binary.BigEndian.Uint32(data[4:8])
 	return nil
 }
@@ -801,12 +792,10 @@ func decodeSCTPShutdownAck(data []byte, p gopacket.PacketBuilder) error {
 }
 
 func (sc *SCTPShutdownAck) DecodeFromBytes(data []byte, df gopacket.DecodeFeedback) error {
-	chunk, err := decodeSCTPChunk(data)
+	err := sc.SCTPChunk.decodeFromBytes(data, df)
 	if err != nil {
-		df.SetTruncated()
 		return err
 	}
-	sc.SCTPChunk = chunk
 	return nil
 }
 
@@ -851,12 +840,10 @@ func decodeSCTPCookieEcho(data []byte, p gopacket.PacketBuilder) error {
 }
 
 func (sc *SCTPCookieEcho) DecodeFromBytes(data []byte, df gopacket.DecodeFeedback) error {
-	chunk, err := decodeSCTPChunk(data)
+	err := sc.SCTPChunk.decodeFromBytes(data, df)
 	if err != nil {
-		df.SetTruncated()
 		return err
 	}
-	sc.SCTPChunk = chunk
 	sc.Cookie = data[4:sc.Length]
 	return nil
 }
@@ -911,12 +898,10 @@ func decodeSCTPEmptyLayer(data []byte, p gopacket.PacketBuilder) error {
 }
 
 func (sc *SCTPEmptyLayer) DecodeFromBytes(data []byte, df gopacket.DecodeFeedback) error {
-	chunk, err := decodeSCTPChunk(data)
+	err := sc.SCTPChunk.decodeFromBytes(data, df)
 	if err != nil {
-		df.SetTruncated()
 		return err
 	}
-	sc.SCTPChunk = chunk
 	return nil
 }
 
