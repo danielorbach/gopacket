@@ -130,8 +130,6 @@ func decodeSCTPChunk(data []byte) (SCTPChunk, error) {
 	if length < 4 {
 		return SCTPChunk{}, errors.New("invalid SCTP chunk length")
 	}
-	actual := roundUpToNearest4(int(length))
-	ct := SCTPChunkType(data[0])
 
 	// The Length field in the SCTP chunk header counts from the first byte (that's
 	// the ChunkType field) until the first byte of the next chunk, if any.
@@ -142,24 +140,17 @@ func decodeSCTPChunk(data []byte) (SCTPChunk, error) {
 	// We ensure the given data is indeed padded appropriately, otherwise we'd be
 	// successfully decoding unpadded DATA chunks, though those SerializeTo properly
 	// padded packets.
+	actual := roundUpToNearest4(int(length))
 	if len(data) < actual {
 		return SCTPChunk{}, errors.New("invalid SCTP chunk data: not enough bytes")
 	}
 
-	// For SCTP Data, use a separate layer for the payload
-	delta := 0
-	if ct == SCTPChunkTypeData {
-		// For SCTP Data, the chunk's payload is padded to a 4-byte boundary,
-		delta = int(actual) - int(length)
-		actual = 16
-	}
-
 	return SCTPChunk{
-		Type:         ct,
+		Type:         SCTPChunkType(data[0]),
 		Flags:        data[1],
 		Length:       length,
 		ActualLength: actual,
-		BaseLayer:    BaseLayer{data[:actual], data[actual : len(data)-delta]},
+		BaseLayer:    BaseLayer{data[:actual], data[actual:]},
 	}, nil
 }
 
@@ -169,14 +160,13 @@ func decodeSCTPDataChunk(data []byte) (SCTPChunk, error) {
 		return SCTPChunk{}, errors.New("invalid SCTP chunk length")
 	}
 	actual := roundUpToNearest4(int(length))
-	ct := SCTPChunkType(data[0])
 
 	if len(data) < actual {
 		return SCTPChunk{}, errors.New("invalid SCTP chunk data: not enough bytes")
 	}
 
 	return SCTPChunk{
-		Type:         ct,
+		Type:         SCTPChunkType(data[0]),
 		Flags:        data[1],
 		Length:       length,
 		ActualLength: actual,
@@ -281,11 +271,16 @@ type SCTPData struct {
 	StreamId                              uint16
 	StreamSequence                        uint16
 	PayloadProtocol                       SCTPPayloadProtocol
-	Payload                               []byte
+	UserData                              []byte
 }
 
 // LayerType returns gopacket.LayerTypeSCTPData.
 func (sc *SCTPData) LayerType() gopacket.LayerType { return LayerTypeSCTPData }
+
+// Payload returns the data payload of the SCTP data chunk.
+func (s *SCTPData) Payload() []byte {
+	return s.UserData
+}
 
 // SCTPPayloadProtocol represents a payload protocol
 type SCTPPayloadProtocol uint32
@@ -366,8 +361,8 @@ func decodeSCTPData(data []byte, p gopacket.PacketBuilder) error {
 	if err != nil {
 		return err
 	}
-	// Length is the length in bytes of the data, INCLUDING the 16-byte header.
 	p.AddLayer(sc)
+	p.SetApplicationLayer(sc)
 	return p.NextDecoder(gopacket.DecodeFunc(decodeWithSCTPChunkTypePrefix))
 }
 
@@ -387,10 +382,9 @@ func (sc *SCTPData) DecodeFromBytes(data []byte, df gopacket.DecodeFeedback) err
 	sc.StreamId = binary.BigEndian.Uint16(data[8:10])
 	sc.StreamSequence = binary.BigEndian.Uint16(data[10:12])
 	sc.PayloadProtocol = SCTPPayloadProtocol(binary.BigEndian.Uint32(data[12:16]))
-	sc.Payload = []byte{}
-	if l := chunk.ActualLength; l >= 16 {
-		sc.Payload = data[16:l]
-	}
+	// Length is the length in bytes of the data, INCLUDING the 16-byte header,
+	// EXCLUDING any padding bytes.
+	sc.UserData = data[16:sc.Length]
 	return nil
 }
 
@@ -405,13 +399,9 @@ func (sc *SCTPData) NextLayerType() gopacket.LayerType {
 
 // SerializeTo is for gopacket.SerializableLayer.
 func (sc SCTPData) SerializeTo(b gopacket.SerializeBuffer, opts gopacket.SerializeOptions) error {
-	payload := sc.Payload
-	length := len(payload) + 16
-
-	if rem := length % 4; rem != 0 {
-		length += 4 - rem
-	}
-	bytes, err := b.PrependBytes(length)
+	length := len(sc.UserData) + 16
+	// Pad the payload to a 4-byte boundary
+	bytes, err := b.PrependBytes(roundUpToNearest4(length))
 	if err != nil {
 		return err
 	}
@@ -427,12 +417,12 @@ func (sc SCTPData) SerializeTo(b gopacket.SerializeBuffer, opts gopacket.Seriali
 		flags |= 0x1
 	}
 	bytes[1] = flags
-	binary.BigEndian.PutUint16(bytes[2:4], sc.Length)
+	binary.BigEndian.PutUint16(bytes[2:4], uint16(length))
 	binary.BigEndian.PutUint32(bytes[4:8], sc.TSN)
 	binary.BigEndian.PutUint16(bytes[8:10], sc.StreamId)
 	binary.BigEndian.PutUint16(bytes[10:12], sc.StreamSequence)
 	binary.BigEndian.PutUint32(bytes[12:16], uint32(sc.PayloadProtocol))
-	copy(bytes[16:], payload)
+	copy(bytes[16:], sc.UserData)
 	return nil
 }
 
