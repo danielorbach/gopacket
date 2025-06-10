@@ -28,14 +28,14 @@ func TestDecodingSCTPChunks(t *testing.T) {
 		{name: "COOKIE_ECHO", data: sctpTestPacketCookieEcho, want: []gopacket.LayerType{LayerTypeSCTP, LayerTypeSCTPCookieEcho}},
 		{name: "COOKIE_ACK", data: sctpTestPacketCookieAck, want: []gopacket.LayerType{LayerTypeSCTP, LayerTypeSCTPCookieAck}},
 		{name: "SACK", data: sctpTestPacketSack, want: []gopacket.LayerType{LayerTypeSCTP, LayerTypeSCTPSack}},
-		{name: "DATA", data: sctpTestPacketData, want: []gopacket.LayerType{LayerTypeSCTP, LayerTypeSCTPData, gopacket.LayerTypePayload}},
+		{name: "DATA", data: sctpTestPacketData, want: []gopacket.LayerType{LayerTypeSCTP, LayerTypeSCTPData}},
 		{name: "HEARTBEAT", data: sctpTestPacketHeartbeat, want: []gopacket.LayerType{LayerTypeSCTP, LayerTypeSCTPHeartbeat}},
 		{name: "HEARTBEAT_ACK", data: sctpTestPacketHeartbeatAck, want: []gopacket.LayerType{LayerTypeSCTP, LayerTypeSCTPHeartbeatAck}},
 		{name: "SHUTDOWN|ACK|COMPLETE", data: sctpTestPacketShutdowns, want: []gopacket.LayerType{LayerTypeSCTP, LayerTypeSCTPShutdown, LayerTypeSCTPShutdownAck, LayerTypeSCTPShutdownComplete}},
 		// The following chunk types are omitted because I haven't captured them.
 		//{name: "ABORT", data: sctpTestPacketAbort},
 		//{name: "ERROR", data: sctpTestPacketError},
-		{name: "Bundling", data: sctpTestBundledPacket, want: []gopacket.LayerType{LayerTypeSCTP, LayerTypeSCTPSack, LayerTypeSCTPData, gopacket.LayerTypePayload}},
+		{name: "Bundling", data: sctpTestBundledPacket, want: []gopacket.LayerType{LayerTypeSCTP, LayerTypeSCTPSack, LayerTypeSCTPData}},
 	}
 
 	for _, tt := range packetTests {
