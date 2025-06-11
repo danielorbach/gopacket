@@ -15,7 +15,8 @@ import (
 // building a gopacket.Packet, reserializing its layers, and comparing the output
 // with the original data.
 //
-// TODO: get packet data from <https://wiki.wireshark.org/SampleCaptures#stream-control-transmission-protocol-sctp>.
+// More exemplar packets can be found in the Wireshark sample captures:
+// <https://wiki.wireshark.org/SampleCaptures#stream-control-transmission-protocol-sctp>.
 func TestDecodingSCTPChunks(t *testing.T) {
 	var packetTests = []struct {
 		name string
@@ -30,10 +31,9 @@ func TestDecodingSCTPChunks(t *testing.T) {
 		{name: "DATA", data: sctpTestPacketData, want: []gopacket.LayerType{LayerTypeSCTP, LayerTypeSCTPData}},
 		{name: "HEARTBEAT", data: sctpTestPacketHeartbeat, want: []gopacket.LayerType{LayerTypeSCTP, LayerTypeSCTPHeartbeat}},
 		{name: "HEARTBEAT_ACK", data: sctpTestPacketHeartbeatAck, want: []gopacket.LayerType{LayerTypeSCTP, LayerTypeSCTPHeartbeatAck}},
+		{name: "SHUTDOWN|ACK|COMPLETE", data: sctpTestPacketShutdowns, want: []gopacket.LayerType{LayerTypeSCTP, LayerTypeSCTPShutdown, LayerTypeSCTPShutdownAck, LayerTypeSCTPShutdownComplete}},
 		// The following chunk types are omitted because I haven't captured them.
 		//{name: "ABORT", data: sctpTestPacketAbort},
-		//{name: "SHUTDOWN", data: sctpTestPacketShutdown},
-		//{name: "SHUTDOWN_ACK", data: sctpTestPacketShutdownAck},
 		//{name: "ERROR", data: sctpTestPacketError},
 		{name: "Bundling", data: sctpTestBundledPacket, want: []gopacket.LayerType{LayerTypeSCTP, LayerTypeSCTPSack, LayerTypeSCTPData}},
 	}
@@ -385,6 +385,38 @@ var sctpTestPacketHeartbeat = []byte{
 var sctpTestPacketHeartbeatAck = []byte{
 	0x8e, 0x3c, 0x8e, 0x3c, 0x03, 0xfe, 0x3c, 0x18, 0x46, 0xb7, 0x76, 0x08, 0x05, 0x00, 0x00, 0x14,
 	0x00, 0x01, 0x00, 0x10, 0x00, 0x58, 0xaf, 0xa2, 0x00, 0x05, 0x00, 0x08, 0x0a, 0x35, 0x00, 0x19,
+}
+
+// Packet with SHUTDOWN (SCTPShutdown), SHUTDOWN_ACK (SCTPShutdownAck), and
+// SHUTDOWN_COMPLETE (SCTPEmptyLayer) chunks:
+//
+//	Stream Control Transmission Protocol, Src Port: 36412 (36412), Dst Port: 36412 (36412)
+//	    Source port: 36412
+//	    Destination port: 36412
+//	    Verification tag: 0xe153413d
+//	    Checksum: 0xb28cf856
+//
+//	SHUTDOWN chunk (Cumulative TSN: 2241376549)
+//	    Chunk type: SHUTDOWN (7)
+//	    Chunk flags: 0x00
+//	    Chunk length: 8
+//	    Cumulative TSN ACK: 2241376549
+//
+//	SHUTDOWN_ACK chunk
+//	    Chunk type: SHUTDOWN_ACK (8)
+//	    Chunk flags: 0x00
+//	    Chunk length: 4
+//
+//	SHUTDOWN_COMPLETE chunk
+//	    Chunk type: SHUTDOWN_COMPLETE (14)
+//	    Chunk flags: 0x00
+//	    Chunk length: 4
+//
+//	0000   8e 3c 8e 3c e1 53 41 3d d1 e2 36 c5 07 00 00 08   .<.<.SA=...V....
+//	0010   85 98 b1 25 08 00 00 04 0e 00 00 04               ...%........
+var sctpTestPacketShutdowns = []byte{
+	0x8e, 0x3c, 0x8e, 0x3c, 0xe1, 0x53, 0x41, 0x3d, 0xd1, 0xe2, 0x36, 0xc5, 0x07, 0x00, 0x00, 0x08,
+	0x85, 0x98, 0xb1, 0x25, 0x08, 0x00, 0x00, 0x04, 0x0e, 0x00, 0x00, 0x04,
 }
 
 // Packet with bundled SACK (SCTPSack) and DATA (SCTPData) chunks:
