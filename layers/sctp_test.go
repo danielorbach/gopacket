@@ -47,34 +47,13 @@ func TestDecodingSCTPChunks(t *testing.T) {
 			}
 
 			// Then, we verify that the packet contains the expected SCTP layer and chunks.
-			testPacketLayers(t, p, tt.want)
+			checkLayers(p, tt.want, t)
 
 			// Finally, we serialise it back to network bytes, comparing to the original data
 			// that was captured.
 			opts := gopacket.SerializeOptions{FixLengths: true, ComputeChecksums: true}
 			testSerializationWithOpts(t, p, tt.data, opts)
 		})
-	}
-}
-
-// Call testPacketLayers from a test function to fail if the given packet's
-// layers differ from the desired layers exactly.
-//
-// This function can be simplified with the generic slices.Equal when this module
-// bumps to go1.18.
-func testPacketLayers(t *testing.T, p gopacket.Packet, want []gopacket.LayerType) {
-	t.Helper()
-
-	var mismatch bool
-	got := make([]gopacket.LayerType, len(p.Layers()))
-	for i, l := range p.Layers() {
-		got[i] = l.LayerType()
-		if l.LayerType() != want[i] {
-			mismatch = true
-		}
-	}
-	if mismatch {
-		t.Errorf("Packet.Layers() = %v, want %v", got, want)
 	}
 }
 
