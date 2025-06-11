@@ -55,6 +55,26 @@ func TestDecodingSCTPChunks(t *testing.T) {
 			testSerializationWithOpts(t, p, tt.data, opts)
 		})
 	}
+
+	t.Run("UnknownChunkType", func(t *testing.T) {
+		// This package exposes the SCTPChunkTypeMetadata enum that defines how each
+		// chunk-type is decoded. By default, unknown chunk types don't have a custom
+		// Decoder, so decoding halts and considers them an error.
+		defer func() { SCTPChunkTypeMetadata[0xff].DecodeWith = nil }()
+		SCTPChunkTypeMetadata[0xff].DecodeWith = DecodeSCTPChunkTypeUnknown
+
+		// First, we should successfully decode the SCTP packet.
+		p := gopacket.NewPacket(sctpTestPacketUnknown, LayerTypeSCTP, gopacket.NoCopy)
+
+		// Then, we verify that the packet contains the expected SCTP layer and chunks.
+		want := []gopacket.LayerType{LayerTypeSCTP, LayerTypeSCTPUnknownChunkType, gopacket.LayerTypeDecodeFailure}
+		checkLayers(p, want, t)
+
+		// Finally, we serialise it back to network bytes, comparing to the original data
+		// that was captured.
+		opts := gopacket.SerializeOptions{FixLengths: true, ComputeChecksums: true}
+		testSerializationWithOpts(t, p, sctpTestPacketUnknown, opts)
+	})
 }
 
 // Packet with an INIT chunk (SCTPInit):
@@ -450,6 +470,36 @@ var sctpTestBundledPacket = []byte{
 	0x03, 0xfe, 0x3c, 0x19, 0x00, 0x00, 0xbb, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x00, 0x17,
 	0xe1, 0x53, 0x41, 0x3e, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x12, 0x20, 0x1e, 0x00, 0x03,
 	0x00, 0x00, 0x00, 0x00,
+}
+
+// Packet with multiple chunks of unknown types (SCTPUnknownChunkType or error):
+//
+//	Stream Control Transmission Protocol, Src Port: 36412 (36412), Dst Port: 36412 (36412)
+//	    Source port: 36412
+//	    Destination port: 36412
+//	    Verification tag: 0xe153413d
+//	    Checksum: 0xc515803a
+//
+//	Unknown chunk (Type: 255, Length: 4)
+//	    Chunk type: 255 (0xff)
+//	    Chunk flags: 0x00
+//	    Chunk length: 4
+//
+//	Unknown chunk (Type: 255, Length: 16)
+//	    Chunk type: 254 (0xfe)
+//	    Chunk flags: 0x00
+//	    Chunk length: 16
+//	    Chunk data: 0405060708090a0b0c0d0e0f
+//
+//	0000   8e 3c 8e 3c e1 53 41 3d c5 15 80 3a ff 00 00 04   .<.<.SA=..6.....
+//	0010   ff 00 00 10 04 05 06 07 08 09 0a 0b 0c 0d 0e 0f   ................
+//
+// Chunks are either SCTPUnknownChunkType or gopacket.LayerTypeDecodeFailure
+// based on whether the specific chunk-type was registered with
+// SCTPChunkTypeMetadata.
+var sctpTestPacketUnknown = []byte{
+	0x8e, 0x3c, 0x8e, 0x3c, 0xe1, 0x53, 0x41, 0x3d, 0xc5, 0x15, 0x80, 0x3a, 0xff, 0x00, 0x00, 0x04,
+	0xfe, 0x00, 0x00, 0x10, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f,
 }
 
 // This test progressively builds an SCTP packet to test truncation detection.
