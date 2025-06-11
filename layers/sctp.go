@@ -190,6 +190,11 @@ type SCTPUnknownChunkType struct {
 	bytes []byte
 }
 
+// DecodeSCTPChunkTypeUnknown is a Decoder that returns an SCTPUnknownChunkType layer containing all
+// remaining bytes, useful if you run up against an SCTP chunk-type that you're unable to
+// decode yet.  This layer is considered an ErrorLayer.
+var DecodeSCTPChunkTypeUnknown gopacket.Decoder = gopacket.DecodeFunc(decodeSCTPChunkTypeUnknown)
+
 func decodeSCTPChunkTypeUnknown(data []byte, p gopacket.PacketBuilder) error {
 	sc := new(SCTPUnknownChunkType)
 	err := sc.DecodeFromBytes(data, p)
