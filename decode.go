@@ -125,6 +125,16 @@ type DecodeFailure struct {
 	stack []byte
 }
 
+// SerializeTo implements SerializableLayer.
+func (d *DecodeFailure) SerializeTo(b SerializeBuffer, opts SerializeOptions) error {
+	bytes, err := b.PrependBytes(len(d.data))
+	if err != nil {
+		return err
+	}
+	copy(bytes, d.data)
+	return nil
+}
+
 // Error returns the error encountered during decoding.
 func (d *DecodeFailure) Error() error { return d.err }
 
