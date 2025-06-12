@@ -25,6 +25,15 @@ func (nilDecodeFeedback) SetTruncated() {}
 // NilDecodeFeedback implements DecodeFeedback by doing nothing.
 var NilDecodeFeedback DecodeFeedback = nilDecodeFeedback{}
 
+// SimpleDecodeFeedback indicates whether, during decoding, a DecodingLayer
+// noticed that the packet was shorter than internal layer variables say it
+// should be.
+type SimpleDecodeFeedback bool
+
+func (df *SimpleDecodeFeedback) SetTruncated() {
+	*df = true
+}
+
 // PacketBuilder is used by layer decoders to store the layers they've decoded,
 // and to defer future decoding via NextDecoder.
 // Typically, the pattern for use is:
