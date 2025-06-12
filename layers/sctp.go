@@ -243,9 +243,8 @@ type SCTPChunkSkipper struct {
 	// Excluded chunk types are attributed to other DecodingLayers (via the Payload
 	// layer type). All other chunk types (i.e. chunk types not in this set) are
 	// consumed and discarded by this DecodingLayer.
-	excluded       map[SCTPChunkType]struct{}
-	excludedLayers map[gopacket.LayerType]struct{}
-	next           []byte // Stores the unprocessed portion of the decoded data for further layer processing.
+	excluded map[gopacket.LayerType]struct{}
+	next     []byte // Stores the unprocessed portion of the decoded data for further layer processing.
 }
 
 // DiscardSCTPChunksExcept creates a chunk filter that skips (i.e. decodes and
@@ -283,20 +282,7 @@ func DiscardSCTPChunksExcept(excluded ...SCTPChunkType) *SCTPChunkSkipper {
 func (s *SCTPChunkSkipper) Exclude(chunkTypes ...SCTPChunkType) {
 	// Zero-value initialisation means deferring the map's initialisation.
 	if s.excluded == nil {
-		s.excluded = make(map[SCTPChunkType]struct{})
-	}
-	for _, chunkType := range chunkTypes {
-		if chunkType.LayerType() == gopacket.LayerTypeZero {
-			slog.Warn("SCTPChunkSkipper: Exclude called with an undefined chunk type",
-				slog.Int("chunkType", int(chunkType)),
-			)
-		}
-		s.excluded[chunkType] = struct{}{}
-	}
-
-	// Zero-value initialisation means deferring the map's initialisation.
-	if s.excludedLayers == nil {
-		s.excludedLayers = make(map[gopacket.LayerType]struct{})
+		s.excluded = make(map[gopacket.LayerType]struct{})
 	}
 	for _, chunkType := range chunkTypes {
 		if chunkType.LayerType() == gopacket.LayerTypeZero {
@@ -305,19 +291,18 @@ func (s *SCTPChunkSkipper) Exclude(chunkTypes ...SCTPChunkType) {
 			)
 			continue // A DecodingLayer can never decode the zero-layer type.
 		}
-		s.excludedLayers[chunkType.LayerType()] = struct{}{}
+		s.excluded[chunkType.LayerType()] = struct{}{}
 	}
-
 }
 
 // ExcludeUnknownChunks excludes all unknown chunks (that is, DecodingLayers that
 // can decode LayerTypeSCTPUnknownChunkType) from this skipper.
 func (s *SCTPChunkSkipper) ExcludeUnknownChunks() {
 	// Zero-value initialisation means deferring the map's initialisation.
-	if s.excludedLayers == nil {
-		s.excludedLayers = make(map[gopacket.LayerType]struct{})
+	if s.excluded == nil {
+		s.excluded = make(map[gopacket.LayerType]struct{})
 	}
-	s.excludedLayers[LayerTypeSCTPUnknownChunkType] = struct{}{}
+	s.excluded[LayerTypeSCTPUnknownChunkType] = struct{}{}
 }
 
 // DecodeFromBytes decodes the common SCTP chunk header to discard the portion of
@@ -356,7 +341,7 @@ func (s *SCTPChunkSkipper) CanDecode() gopacket.LayerClass {
 	// LayerClassSCTPChunk and SCTPChunkTypeMetadata. We must traverse both
 	// collections to get the entire set of LayerTypes a DecodingLayerParser may
 	// encounter.
-	var allChunkLayers map[gopacket.LayerType]struct{}
+	allChunkLayers := make(map[gopacket.LayerType]struct{})
 	// LayerClassSCTPChunk contains layer types corresponding to the standard chunk
 	// types, including the layer-type used to decode chunks with unknown types.
 	for _, chunkLayer := range LayerClassSCTPChunk.LayerTypes() {
@@ -376,7 +361,7 @@ func (s *SCTPChunkSkipper) CanDecode() gopacket.LayerClass {
 	// Now we can exclude the relevant layers. Explicitly excluded layer types are
 	// not decodable by this DecodingLayer, allowing the DecodingLayerContainer to
 	// provide other DecodingLayers for them.
-	for chunkLayer := range s.excludedLayers {
+	for chunkLayer := range s.excluded {
 		delete(allChunkLayers, chunkLayer)
 	}
 	// All remaining chunk types should be consumed and discarded by this DecodingLayer.
