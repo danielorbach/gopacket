@@ -163,17 +163,32 @@ func (c *SCTPChunk) DecodeFromBytes(data []byte, df gopacket.DecodeFeedback) err
 // solves this by first peeking the common chunk header to determine the chunk
 // type, then returning the appropriate layer type via NextLayerType().
 type SCTPChunkSelector struct {
-	// TODO: stop decoding zero-layer-type instead of unknown.
+	// Set to fail decoding of unknown chunk types, thus stopping parsers from
+	// decoding more chunks after encountering unknown types.
+	//
+	// By default, unknown chunk types are decoded as LayerTypeSCTPUnknownChunkType,
+	// thus proceeding gracefully to the next chunk.
+	Strict bool
 	header SCTPChunk // Common chunk header shared by all SCTP chunk types.
 	data   []byte    // The entire peeked data buffer, ready for the next decoding-layer.
 }
 
 // DecodeFromBytes decodes the common SCTP chunk header to extract the chunk type.
 // This allows NextLayerType() to determine which specific chunk layer should be used.
+//
+// In Strict mode, decoding fails when the peeked chunk type is not defined in
+// SCTPChunkTypeMetadata. This enum already contains IETF chunk types, though
+// users may manually set additional chunk-types before decoding begins.
 func (s *SCTPChunkSelector) DecodeFromBytes(data []byte, df gopacket.DecodeFeedback) error {
 	err := s.header.DecodeFromBytes(data, df)
 	if err != nil {
 		return err
+	}
+	// In strict mode, the next layer must be one of the predefined chunk types, so
+	// unknown chunk types fail the decoding process. For unknown chunk types, the
+	// LayerType function returns zero.
+	if s.Strict && s.header.Type.LayerType() == gopacket.LayerTypeZero {
+		return fmt.Errorf("unknown SCTP chunk type %v", uint8(s.header.Type))
 	}
 	s.data = data
 	return nil
@@ -188,8 +203,21 @@ func (s *SCTPChunkSelector) CanDecode() gopacket.LayerClass {
 // chunk-specific decoding.
 //
 // For unknown chunk types, it returns LayerTypeSCTPUnknownChunkType to allow the
-// parser to handle them gracefully as an error layer.
+// parser to handle them gracefully, unless Strict mode is enabled, in which case
+// decoding completes immediately.
 func (s *SCTPChunkSelector) NextLayerType() gopacket.LayerType {
+	// In strict mode, the next layer must be one of the predefined chunk types.
+	// Unknown chunk types cause the decoding process to complete.
+	if s.Strict {
+		return s.header.Type.LayerType()
+	}
+	// The SCTP chunk type enum (SCTPChunkTypeMetadata) contains LayerTypeZero for
+	// unknown chunk types. But when using the DecodingLayer API, it often makes more
+	// sense to process unknown chunks gracefully and continue to the next chunk.
+	// This can be disabled by setting the Strict field.
+	if s.header.Type.LayerType() == gopacket.LayerTypeZero {
+		return LayerTypeSCTPUnknownChunkType
+	}
 	return s.header.Type.LayerType()
 }
 

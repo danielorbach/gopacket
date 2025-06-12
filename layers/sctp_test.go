@@ -21,14 +21,17 @@ func Example_sctpDecodingLayer() {
 		0x39, 0x00, 0x1f, 0x36, 0x00, 0x00, 0x08, 0x00,
 		// IP(v4) header: 20 bytes.
 		0x45, 0x00, 0x00, 0x68, 0x00, 0x00, 0x40, 0x00,
-		0x40, 0x84, 0x25, 0x4a, 0x0a, 0x35, 0x00, 0x19,
+		0x40, 0x84, 0x25, 0x2a, 0x0a, 0x35, 0x00, 0x19,
 		0x0a, 0x2b, 0x00, 0x70,
 		// SCTP header: 12 bytes.
 		0x8e, 0x3c, 0x8e, 0x3c, 0x03, 0xfe, 0x3c, 0x18,
-		0xd3, 0x04, 0x1f, 0xa4,
+		0x3f, 0xd6, 0xde, 0xfa,
 		// SACK chunk: 16 bytes.
 		0x03, 0x00, 0x00, 0x10, 0xe1, 0x53, 0x41, 0x3d,
 		0x00, 0x00, 0x27, 0x10, 0x00, 0x00, 0x00, 0x00,
+		// UNKNOWN chunk: 16 bytes of unknown format.
+		0xfe, 0x00, 0x00, 0x10, 0xde, 0xad, 0xbe, 0xef,
+		0xB1, 0x6B, 0x00, 0xB5, 0xF0, 0x0D, 0xBA, 0xBE,
 		// DATA chunk: 16 bytes chunk header + 7 bytes payload + 1 byte padding.
 		0x00, 0x03, 0x00, 0x17, 0xe1, 0x53, 0x41, 0x3e,
 		0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x12,
@@ -58,6 +61,7 @@ func Example_sctpDecodingLayer() {
 		network   IPv4
 		transport SCTP
 		data      SCTPData
+		unknown   SCTPUnknownChunkType
 	)
 	// We register the layers in the order they appear in the packet, though this is
 	// not strictly necessary.
@@ -68,6 +72,11 @@ func Example_sctpDecodingLayer() {
 	// decode SCTP chunks based on their type. This layer can decode Payload layers,
 	// which are what SCTP reports as the next layer.
 	parser.AddDecodingLayer(&SCTPChunkSelector{})
+	// Though uncommon, you may encounter extension chunks that we don't know how to
+	// decode. This does not necessarily block decoding. By providing a DecodingLayer
+	// that can decode LayerTypeSCTPUnknownChunkType, these chunks are decoded as
+	// opaque blocs, and processing moves on uninterrupted.
+	parser.AddDecodingLayer(&unknown)
 	// In this example we are interested in DATA chunks, so we must supply the parser
 	// with an allocated layer to hold decoded values.
 	parser.AddDecodingLayer(&data)
@@ -84,13 +93,17 @@ func Example_sctpDecodingLayer() {
 	fmt.Println("Decoded layers:", decoded)
 	fmt.Println()
 	fmt.Println("Decoded DATA chunk:", gopacket.LayerDump(&data))
+	fmt.Println("Decoded UNKNOWN chunk:", gopacket.LayerDump(&unknown))
 
 	// Output:
-	// Decoded layers: [Linux SLL IPv4 SCTP Payload SCTPSack Payload SCTPData Payload SCTPSack]
+	// Decoded layers: [Linux SLL IPv4 SCTP Payload SCTPSack Payload SCTPUnknownChunkType Payload SCTPData Payload SCTPSack]
 	//
 	// Decoded DATA chunk: SCTPData	{Contents=[..24..] Payload=[..16..] Type=Data Flags=3 Length=23 ActualLength=24 Unordered=false BeginFragment=true EndFragment=true TSN=3780329790 StreamId=0 StreamSequence=1 PayloadProtocol=S1AP UserData=[..7..]}
 	// 00000000  00 03 00 17 e1 53 41 3e  00 00 00 01 00 00 00 12  |.....SA>........|
 	// 00000010  20 1e 00 03 00 00 00 00                           | .......|
+	//
+	// Decoded UNKNOWN chunk: SCTPUnknownChunkType	{Contents=[..16..] Payload=[..40..] Type=UnknownSCTPChunkType Flags=0 Length=16 ActualLength=16}
+	// 00000000  fe 00 00 10 de ad be ef  b1 6b 00 b5 f0 0d ba be  |.........k......|
 }
 
 // TestDecodingSCTP verifies the decoding of SCTP packets by successfully
