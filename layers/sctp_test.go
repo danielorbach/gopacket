@@ -6,10 +6,92 @@
 package layers
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/google/gopacket"
 )
+
+func Example_sctpDecodingLayer() {
+	// This packet contains an SCTP packet with several chunks, each showcasing a
+	// nuance of using the DecodingLayer API with SCTP packets.
+	packetData := []byte{
+		// Linux Cooked Capture (SLL): 16 bytes.
+		0x00, 0x04, 0x00, 0x10, 0x00, 0x06, 0x2c, 0xa5,
+		0x39, 0x00, 0x1f, 0x36, 0x00, 0x00, 0x08, 0x00,
+		// IP(v4) header: 20 bytes.
+		0x45, 0x00, 0x00, 0x68, 0x00, 0x00, 0x40, 0x00,
+		0x40, 0x84, 0x25, 0x4a, 0x0a, 0x35, 0x00, 0x19,
+		0x0a, 0x2b, 0x00, 0x70,
+		// SCTP header: 12 bytes.
+		0x8e, 0x3c, 0x8e, 0x3c, 0x03, 0xfe, 0x3c, 0x18,
+		0xd3, 0x04, 0x1f, 0xa4,
+		// SACK chunk: 16 bytes.
+		0x03, 0x00, 0x00, 0x10, 0xe1, 0x53, 0x41, 0x3d,
+		0x00, 0x00, 0x27, 0x10, 0x00, 0x00, 0x00, 0x00,
+		// DATA chunk: 16 bytes chunk header + 7 bytes payload + 1 byte padding.
+		0x00, 0x03, 0x00, 0x17, 0xe1, 0x53, 0x41, 0x3e,
+		0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x12,
+		0x20, 0x1e, 0x00, 0x03, 0x00, 0x00, 0x00, 0x00,
+		// SACK chunk: 16 bytes.
+		0x03, 0x00, 0x00, 0x10, 0x03, 0xfe, 0x3c, 0x19,
+		0x00, 0x00, 0xbb, 0x80, 0x00, 0x00, 0x00, 0x00,
+	}
+
+	// Performance-oriented parsing requires prior knowledge of the stack's layers.
+	//
+	// Luckily, this package provides DecodingLayers that provide access to decoded
+	// SCTP chunks.
+	parser := gopacket.NewDecodingLayerParser(LayerTypeLinuxSLL)
+	// For this example this is quite easy, we know the entire packet in advance.
+	//
+	// Unfortunately, users rarely know which SCTP chunks are present in any SCTP
+	// packet and the standard supports bundling of multiple chunks into a single
+	// SCTP packet. This means that an SCTP packet may contain any number of chunks,
+	// allowing for multiple chunks of the same type.
+	//
+	// Fortunately, most SCTP packets contain at most a single occurrence of any
+	// chunk type. This example shows how to access those interesting chunks by
+	// cherry-picking the DATA chunk while ignoring the SACK chunk.
+	var (
+		link      LinuxSLL
+		network   IPv4
+		transport SCTP
+		data      SCTPData
+	)
+	// We register the layers in the order they appear in the packet, though this is
+	// not strictly necessary.
+	parser.AddDecodingLayer(&link)
+	parser.AddDecodingLayer(&network)
+	parser.AddDecodingLayer(&transport)
+	// The SCTPChunkSelector is a special DecodingLayer that allows us to selectively
+	// decode SCTP chunks based on their type. This layer can decode Payload layers,
+	// which are what SCTP reports as the next layer.
+	parser.AddDecodingLayer(&SCTPChunkSelector{})
+	// In this example we are interested in DATA chunks, so we must supply the parser
+	// with an allocated layer to hold decoded values.
+	parser.AddDecodingLayer(&data)
+	// To skip uninteresting chunk types, add the appropriate layers as a discarded
+	// variable.
+	parser.AddDecodingLayer(&SCTPSack{})
+
+	// After registering the layers, we can decode the packet data.
+	var decoded []gopacket.LayerType
+	err := parser.DecodeLayers(packetData, &decoded)
+	if err != nil {
+		panic(err)
+	}
+	fmt.Println("Decoded layers:", decoded)
+	fmt.Println()
+	fmt.Println("Decoded DATA chunk:", gopacket.LayerDump(&data))
+
+	// Output:
+	// Decoded layers: [Linux SLL IPv4 SCTP Payload SCTPSack Payload SCTPData Payload SCTPSack]
+	//
+	// Decoded DATA chunk: SCTPData	{Contents=[..24..] Payload=[..16..] Type=Data Flags=3 Length=23 ActualLength=24 Unordered=false BeginFragment=true EndFragment=true TSN=3780329790 StreamId=0 StreamSequence=1 PayloadProtocol=S1AP UserData=[..7..]}
+	// 00000000  00 03 00 17 e1 53 41 3e  00 00 00 01 00 00 00 12  |.....SA>........|
+	// 00000010  20 1e 00 03 00 00 00 00                           | .......|
+}
 
 // TestDecodingSCTP verifies the decoding of SCTP packets by successfully
 // building a gopacket.Packet, reserializing its layers, and comparing the output

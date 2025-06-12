@@ -154,6 +154,50 @@ func (c *SCTPChunk) decodeFromBytes(data []byte, df gopacket.DecodeFeedback) err
 	return nil
 }
 
+// SCTPChunkSelector is an intermediate decoding layer for Payload layers
+// containing SCTP chunks, suitable for a DecodingLayerParser.
+//
+// The DecodingLayerParser needs every layer to provide the next layer to decode
+// into, but for SCTP chunks this information is embedded within the chunk's byte
+// slice (the first byte of every chunk encodes its type). SCTPChunkSelector
+// solves this by first peeking the common chunk header to determine the chunk
+// type, then returning the appropriate layer type via NextLayerType().
+type SCTPChunkSelector struct {
+	// TODO: stop decoding zero-layer-type instead of unknown.
+	header SCTPChunk // Common chunk header shared by all SCTP chunk types.
+	data   []byte    // The entire peeked data buffer, ready for the next decoding-layer.
+}
+
+// DecodeFromBytes decodes the common SCTP chunk header to extract the chunk type.
+// This allows NextLayerType() to determine which specific chunk layer should be used.
+func (s *SCTPChunkSelector) DecodeFromBytes(data []byte, df gopacket.DecodeFeedback) error {
+	err := s.header.decodeFromBytes(data, df)
+	if err != nil {
+		return err
+	}
+	s.data = data
+	return nil
+}
+
+func (s *SCTPChunkSelector) CanDecode() gopacket.LayerClass {
+	return gopacket.LayerTypePayload
+}
+
+// NextLayerType returns the appropriate layer type based on the decoded chunk
+// type. This enables the DecodingLayerParser to select the correct layer for
+// chunk-specific decoding.
+//
+// For unknown chunk types, it returns LayerTypeSCTPUnknownChunkType to allow the
+// parser to handle them gracefully as an error layer.
+func (s *SCTPChunkSelector) NextLayerType() gopacket.LayerType {
+	return s.header.Type.LayerType()
+}
+
+// LayerPayload returns the remaining bytes to be decoded by the next layer.
+func (s *SCTPChunkSelector) LayerPayload() []byte {
+	return s.data
+}
+
 // SCTPParameter is a TLV parameter inside a SCTPChunk.
 type SCTPParameter struct {
 	Type         uint16
@@ -220,8 +264,7 @@ func (sc *SCTPUnknownChunkType) CanDecode() gopacket.LayerClass {
 }
 
 func (sc *SCTPUnknownChunkType) NextLayerType() gopacket.LayerType {
-	// TODO(@danielorbach): keep decoding more chunks.
-	return gopacket.LayerTypeZero
+	return gopacket.LayerTypePayload
 }
 
 // SerializeTo is for gopacket.SerializableLayer.
@@ -369,8 +412,7 @@ func (sc *SCTPData) CanDecode() gopacket.LayerClass {
 }
 
 func (sc *SCTPData) NextLayerType() gopacket.LayerType {
-	// TODO(@danielorbach): keep decoding more chunks.
-	return gopacket.LayerTypeZero
+	return gopacket.LayerTypePayload
 }
 
 // SerializeTo is for gopacket.SerializableLayer.
@@ -459,8 +501,7 @@ func (sc *SCTPInit) CanDecode() gopacket.LayerClass {
 }
 
 func (sc *SCTPInit) NextLayerType() gopacket.LayerType {
-	// TODO(@danielorbach): keep decoding more chunks.
-	return gopacket.LayerTypeZero
+	return gopacket.LayerTypePayload
 }
 
 // SerializeTo is for gopacket.SerializableLayer.
@@ -553,8 +594,7 @@ func (sc *SCTPSack) CanDecode() gopacket.LayerClass {
 }
 
 func (sc *SCTPSack) NextLayerType() gopacket.LayerType {
-	// TODO(@danielorbach): keep decoding more chunks.
-	return gopacket.LayerTypeZero
+	return gopacket.LayerTypePayload
 }
 
 // SerializeTo is for gopacket.SerializableLayer.
@@ -629,8 +669,7 @@ func (sc *SCTPHeartbeat) CanDecode() gopacket.LayerClass {
 }
 
 func (sc *SCTPHeartbeat) NextLayerType() gopacket.LayerType {
-	// TODO(@danielorbach): keep decoding more chunks.
-	return gopacket.LayerTypeZero
+	return gopacket.LayerTypePayload
 }
 
 // SerializeTo is for gopacket.SerializableLayer.
@@ -700,8 +739,7 @@ func (sc *SCTPError) CanDecode() gopacket.LayerClass {
 }
 
 func (sc *SCTPError) NextLayerType() gopacket.LayerType {
-	// TODO(@danielorbach): keep decoding more chunks.
-	return gopacket.LayerTypeZero
+	return gopacket.LayerTypePayload
 }
 
 // SerializeTo is for gopacket.SerializableLayer.
@@ -756,8 +794,7 @@ func (sc *SCTPShutdown) CanDecode() gopacket.LayerClass {
 }
 
 func (sc *SCTPShutdown) NextLayerType() gopacket.LayerType {
-	// TODO(@danielorbach): keep decoding more chunks.
-	return gopacket.LayerTypeZero
+	return gopacket.LayerTypePayload
 }
 
 // SerializeTo is for gopacket.SerializableLayer.
@@ -804,8 +841,7 @@ func (sc *SCTPShutdownAck) CanDecode() gopacket.LayerClass {
 }
 
 func (sc *SCTPShutdownAck) NextLayerType() gopacket.LayerType {
-	// TODO(@danielorbach): keep decoding more chunks.
-	return gopacket.LayerTypeZero
+	return gopacket.LayerTypePayload
 }
 
 // SerializeTo is for gopacket.SerializableLayer.
@@ -853,8 +889,7 @@ func (sc *SCTPCookieEcho) CanDecode() gopacket.LayerClass {
 }
 
 func (sc *SCTPCookieEcho) NextLayerType() gopacket.LayerType {
-	// TODO(@danielorbach): keep decoding more chunks.
-	return gopacket.LayerTypeZero
+	return gopacket.LayerTypePayload
 }
 
 // SerializeTo is for gopacket.SerializableLayer.
@@ -910,8 +945,7 @@ func (sc *SCTPEmptyLayer) CanDecode() gopacket.LayerClass {
 }
 
 func (sc *SCTPEmptyLayer) NextLayerType() gopacket.LayerType {
-	// TODO(@danielorbach): keep decoding more chunks.
-	return gopacket.LayerTypeZero
+	return gopacket.LayerTypePayload
 }
 
 // SerializeTo is for gopacket.SerializableLayer.
