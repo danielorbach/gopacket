@@ -162,6 +162,10 @@ func (c *SCTPChunk) decodeFromBytes(data []byte, df gopacket.DecodeFeedback) err
 // slice (the first byte of every chunk encodes its type). SCTPChunkSelector
 // solves this by first peeking the common chunk header to determine the chunk
 // type, then returning the appropriate layer type via NextLayerType().
+//
+// It invokes the DecodingLayer registered for LayerTypeSCTPUnknownChunkType when
+// the chunk's type is not one of the predefined types, as maintained by
+// SCTPChunkTypeMetadata.
 type SCTPChunkSelector struct {
 	// Set to fail decoding of unknown chunk types, thus stopping parsers from
 	// decoding more chunks after encountering unknown types.
@@ -178,7 +182,8 @@ type SCTPChunkSelector struct {
 //
 // In Strict mode, decoding fails when the peeked chunk type is not defined in
 // SCTPChunkTypeMetadata. This enum already contains IETF chunk types, though
-// users may manually set additional chunk-types before decoding begins.
+// users may manually set the LayerType field of additional chunk-types before
+// decoding begins.
 func (s *SCTPChunkSelector) DecodeFromBytes(data []byte, df gopacket.DecodeFeedback) error {
 	err := s.header.decodeFromBytes(data, df)
 	if err != nil {
@@ -203,14 +208,10 @@ func (s *SCTPChunkSelector) CanDecode() gopacket.LayerClass {
 // chunk-specific decoding.
 //
 // For unknown chunk types, it returns LayerTypeSCTPUnknownChunkType to allow the
-// parser to handle them gracefully, unless Strict mode is enabled, in which case
-// decoding completes immediately.
+// parser to handle them gracefully. When Strict mode is enabled, this function
+// is never called by the DecodingLayerParser because DecodeFromBytes returns a
+// non-nil error.
 func (s *SCTPChunkSelector) NextLayerType() gopacket.LayerType {
-	// In strict mode, the next layer must be one of the predefined chunk types.
-	// Unknown chunk types cause the decoding process to complete.
-	if s.Strict {
-		return s.header.Type.LayerType()
-	}
 	// The SCTP chunk type enum (SCTPChunkTypeMetadata) contains LayerTypeZero for
 	// unknown chunk types. But when using the DecodingLayer API, it often makes more
 	// sense to process unknown chunks gracefully and continue to the next chunk.
