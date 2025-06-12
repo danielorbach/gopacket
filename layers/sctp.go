@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"hash/crc32"
+	"log/slog"
 
 	"github.com/google/gopacket"
 )
@@ -225,6 +226,186 @@ func (s *SCTPChunkSelector) NextLayerType() gopacket.LayerType {
 // LayerPayload returns the remaining bytes to be decoded by the next layer.
 func (s *SCTPChunkSelector) LayerPayload() []byte {
 	return s.data
+}
+
+// SCTPChunkSkipper is an intermediate decoding layer that provides selective
+// chunk processing by skipping unwanted chunk types. Chunk types explicitly
+// listed in excludedTypes will be skipped; all others are decoded.
+//
+// This layer is particularly useful for efficiently processing large SCTP
+// streams when you want to filter out specific chunk types, avoiding the overhead of
+// decoding unwanted chunks.
+//
+// When a DecodingLayerContainer is Put multiple DecodingLayers for the same
+// LayerType (i.e. their CanDecode functions overlap), the latter call to Put
+// overwrites the previous call.
+type SCTPChunkSkipper struct {
+	// Excluded chunk types are attributed to other DecodingLayers (via the Payload
+	// layer type). All other chunk types (i.e. chunk types not in this set) are
+	// consumed and discarded by this DecodingLayer.
+	excluded       map[SCTPChunkType]struct{}
+	excludedLayers map[gopacket.LayerType]struct{}
+	next           []byte // Stores the unprocessed portion of the decoded data for further layer processing.
+}
+
+// DiscardSCTPChunksExcept creates a chunk filter that skips (i.e. decodes and
+// discards) all but the specified chunk types. The given chunk types are
+// excluded by the returned DecodingLayer. This enables efficient processing of
+// large SCTP streams when you want to filter out specific unwanted chunks.
+//
+// Examples:
+//
+//	// Discard/skip SACK chunks to focus on data processing.
+//	DecodingLayerParser.AddDecodingLayer(DiscardSCTPChunksExcept(SCTPChunkTypeSack))
+//
+//	// Discard/skip heartbeat-related chunks.
+//	DecodingLayerParser.AddDecodingLayer(DiscardSCTPChunksExcept(SCTPChunkTypeHeartbeat, SCTPChunkTypeHeartbeatAck))
+//
+//	// Discard/skip custom/proprietary chunk types.
+//	DecodingLayerParser.AddDecodingLayer(DiscardSCTPChunksExcept(SCTPChunkType(200), SCTPChunkType(201)))
+//
+//	// Discard/skip all unknown chunk types.
+//	DecodingLayerParser.AddDecodingLayer(DiscardSCTPChunksExcept(LayerTypeSCTPUnknownChunkType))
+func DiscardSCTPChunksExcept(excluded ...SCTPChunkType) *SCTPChunkSkipper {
+	skipper := new(SCTPChunkSkipper)
+	skipper.Exclude(excluded...)
+	return skipper
+}
+
+// Exclude the given chunk-types from the set of chunk-types that will be skipped
+// during decoding.
+//
+// Chunk types outside the predefined set of the IETF specification (those that
+// aren’t part of LayerClassSCTPChunk) should have a non-zero LayerType set in
+// SCTPChunkTypeMetadata before calling this function. Otherwise, the
+// non-standard chunk-type is ignored without actionable feedback (though a
+// warning log is emitted).
+func (s *SCTPChunkSkipper) Exclude(chunkTypes ...SCTPChunkType) {
+	// Zero-value initialisation means deferring the map's initialisation.
+	if s.excluded == nil {
+		s.excluded = make(map[SCTPChunkType]struct{})
+	}
+	for _, chunkType := range chunkTypes {
+		if chunkType.LayerType() == gopacket.LayerTypeZero {
+			slog.Warn("SCTPChunkSkipper: Exclude called with an undefined chunk type",
+				slog.Int("chunkType", int(chunkType)),
+			)
+		}
+		s.excluded[chunkType] = struct{}{}
+	}
+
+	// Zero-value initialisation means deferring the map's initialisation.
+	if s.excludedLayers == nil {
+		s.excludedLayers = make(map[gopacket.LayerType]struct{})
+	}
+	for _, chunkType := range chunkTypes {
+		if chunkType.LayerType() == gopacket.LayerTypeZero {
+			slog.Warn("SCTPChunkSkipper: Exclude called with an undefined chunk type",
+				slog.Int("chunkType", int(chunkType)),
+			)
+			continue // A DecodingLayer can never decode the zero-layer type.
+		}
+		s.excludedLayers[chunkType.LayerType()] = struct{}{}
+	}
+
+}
+
+// ExcludeUnknownChunks excludes all unknown chunks (that is, DecodingLayers that
+// can decode LayerTypeSCTPUnknownChunkType) from this skipper.
+func (s *SCTPChunkSkipper) ExcludeUnknownChunks() {
+	// Zero-value initialisation means deferring the map's initialisation.
+	if s.excludedLayers == nil {
+		s.excludedLayers = make(map[gopacket.LayerType]struct{})
+	}
+	s.excludedLayers[LayerTypeSCTPUnknownChunkType] = struct{}{}
+}
+
+// DecodeFromBytes decodes the common SCTP chunk header to discard the portion of
+// the data that encodes this chunk.
+//
+// This function is only called on chunks that should be discarded, as determined
+// by SCTPChunkSelector.NextLayerType() and SCTPChunkSkipper.CanDecode.
+func (s *SCTPChunkSkipper) DecodeFromBytes(data []byte, df gopacket.DecodeFeedback) error {
+	var header SCTPChunk
+	err := header.decodeFromBytes(data, df)
+	if err != nil {
+		return err
+	}
+	// Skip this chunk entirely and return data starting from the next chunk.
+	s.next = data[header.ActualLength:]
+	return nil
+}
+
+// CanDecode returns a dynamic LayerClass containing the LayerTypes corresponding
+// to chunk types that should be consumed (and discarded) by this DecodingLayer.
+// This includes all standard SCTP chunk types (LayerClassSCTPChunk), except those
+// explicitly excluded by prior calls to Exclude.
+//
+// The returned LayerClass enables the DecodingLayerParser to route chunks
+// correctly: chunks with types in the excluded set are processed normally, while
+// all other chunks are skipped entirely (consumed and discarded).
+//
+// Unlike most layers that return a fixed LayerClass, SCTPChunkSkipper's
+// CanDecode adapts dynamically as chunk types are excluded via Exclude().
+//
+// This function is only called when the SCTPChunkSkipper is Put into a
+// DecodingLayerContainer, so it doesn't affect the performance-critical
+// code-path.
+func (s *SCTPChunkSkipper) CanDecode() gopacket.LayerClass {
+	// The LayerTypes of SCTP chunk layers are defined in two locations:
+	// LayerClassSCTPChunk and SCTPChunkTypeMetadata. We must traverse both
+	// collections to get the entire set of LayerTypes a DecodingLayerParser may
+	// encounter.
+	var allChunkLayers map[gopacket.LayerType]struct{}
+	// LayerClassSCTPChunk contains layer types corresponding to the standard chunk
+	// types, including the layer-type used to decode chunks with unknown types.
+	for _, chunkLayer := range LayerClassSCTPChunk.LayerTypes() {
+		allChunkLayers[chunkLayer] = struct{}{}
+	}
+	// The SCTPChunkTypeMetadata is used by users to extend the set of known chunk
+	// types. It maps each custom chunk type to a layer-type, in addition to the
+	// standard chunk types.
+	for _, chunkType := range SCTPChunkTypeMetadata {
+		// A zero layer-type indicates the chunk type is not supported by gopacket at
+		// this moment.
+		if chunkType.LayerType == gopacket.LayerTypeZero {
+			continue
+		}
+		allChunkLayers[chunkType.LayerType] = struct{}{}
+	}
+	// Now we can exclude the relevant layers. Explicitly excluded layer types are
+	// not decodable by this DecodingLayer, allowing the DecodingLayerContainer to
+	// provide other DecodingLayers for them.
+	for chunkLayer := range s.excludedLayers {
+		delete(allChunkLayers, chunkLayer)
+	}
+	// All remaining chunk types should be consumed and discarded by this DecodingLayer.
+	layers := make([]gopacket.LayerType, 0, len(allChunkLayers))
+	for chunkLayer := range allChunkLayers {
+		layers = append(layers, chunkLayer)
+	}
+	return gopacket.NewLayerClass(layers)
+}
+
+// NextLayerType always returns gopacket.LayerTypePayload, behaving like
+// SCTP.NextLayerType.
+//
+// In most cases, the Payload layer type triggers an SCTPChunkSelector to guide
+// the appropriate decoding for the next chunk.
+//
+// This function is only called on chunks that should be discarded, as determined
+// by SCTPChunkSelector.NextLayerType() and SCTPChunkSkipper.CanDecode.
+func (s *SCTPChunkSkipper) NextLayerType() gopacket.LayerType {
+	// The decoded chunk type was discarded, move on to the next chunk.
+	return gopacket.LayerTypePayload
+}
+
+// LayerPayload returns the remaining bytes to be decoded by the next layer.
+//
+// This function is only called on chunks that should be discarded, as determined
+// by SCTPChunkSelector.NextLayerType() and SCTPChunkSkipper.CanDecode.
+func (s *SCTPChunkSkipper) LayerPayload() []byte {
+	return s.next
 }
 
 // SCTPParameter is a TLV parameter inside a SCTPChunk.
