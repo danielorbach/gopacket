@@ -705,7 +705,7 @@ func testTruncatedPacketOnSCTP(t *testing.T, packetData []byte, description stri
 	}
 }
 
-func TestSCTPChunkSkipper(t *testing.T) {
+func TestSkippingSCTPChunks(t *testing.T) {
 	// Test packet with multiple chunk types: SACK + DATA + HEARTBEAT.
 	packetData := []byte{
 		// SCTP header: 12 bytes.
@@ -724,108 +724,216 @@ func TestSCTPChunkSkipper(t *testing.T) {
 		0x9a, 0xbc, 0xde, 0xf0,
 	}
 
-	// Helper function to test chunk skipping by directly testing the skipper methods
-	testSkipperBehavior := func(skipper *SCTPChunkSkipper, chunkData []byte, expectedSkip bool, description string) {
-		err := skipper.DecodeFromBytes(chunkData, gopacket.NilDecodeFeedback)
-		if err != nil {
-			t.Errorf("%s: DecodeFromBytes failed: %v", description, err)
-			return
+	// Test 1: Normal decoding without skipper should process all chunk types
+	parser := gopacket.NewDecodingLayerParser(LayerTypeSCTP)
+	var sctp SCTP
+	var selector SCTPChunkSelector
+	var sack SCTPSack
+	var data SCTPData
+	var heartbeat SCTPHeartbeat
+
+	parser.AddDecodingLayer(&sctp)
+	parser.AddDecodingLayer(&selector)
+	parser.AddDecodingLayer(&sack)
+	parser.AddDecodingLayer(&data)
+	parser.AddDecodingLayer(&heartbeat)
+
+	var decoded []gopacket.LayerType
+	err := parser.DecodeLayers(packetData, &decoded)
+	if err != nil {
+		t.Fatalf("DecodeLayers failed: %v", err)
+	}
+
+	// Without skipper, all chunks should be decoded
+	expectedLayers := []gopacket.LayerType{
+		LayerTypeSCTP,
+		gopacket.LayerTypePayload,
+		LayerTypeSCTPSack,
+		gopacket.LayerTypePayload,
+		LayerTypeSCTPData,
+		gopacket.LayerTypePayload,
+		LayerTypeSCTPHeartbeat,
+	}
+
+	if !layersEqual(decoded, expectedLayers) {
+		t.Errorf("Normal decoding: expected %v, got %v", expectedLayers, decoded)
+	}
+
+	// Test 2: Skip SACK and HEARTBEAT chunks
+	skipper2 := DiscardSCTPChunksExcept(SCTPChunkTypeData)
+	parser2 := gopacket.NewDecodingLayerParser(LayerTypeSCTP)
+	var sctp2 SCTP
+	var selector2 SCTPChunkSelector
+	var data2 SCTPData
+
+	parser2.AddDecodingLayer(&sctp2)
+	parser2.AddDecodingLayer(&selector2)
+	parser2.AddDecodingLayer(skipper2)
+	parser2.AddDecodingLayer(&data2)
+
+	var decoded2 []gopacket.LayerType
+	err = parser2.DecodeLayers(packetData, &decoded2)
+	if err != nil {
+		t.Fatalf("DecodeLayers with exclusions failed: %v", err)
+	}
+
+	// SACK and HEARTBEAT should be skipped, only DATA should be decoded
+	expectedLayers2 := []gopacket.LayerType{
+		LayerTypeSCTP,
+		gopacket.LayerTypePayload,
+		gopacket.LayerTypePayload,
+		LayerTypeSCTPData,
+		gopacket.LayerTypePayload,
+	}
+
+	if !layersEqual(decoded2, expectedLayers2) {
+		t.Errorf("Skipper with exclusions: expected %v, got %v", expectedLayers2, decoded2)
+	}
+
+	// Test 3: Exclude all chunk types using Exclude method
+	skipper3 := &SCTPChunkSkipper{}
+	skipper3.Exclude(SCTPChunkTypeSack, SCTPChunkTypeData, SCTPChunkTypeHeartbeat)
+
+	parser3 := gopacket.NewDecodingLayerParser(LayerTypeSCTP)
+	var sctp3 SCTP
+	var selector3 SCTPChunkSelector
+
+	parser3.AddDecodingLayer(&sctp3)
+	parser3.AddDecodingLayer(&selector3)
+	parser3.AddDecodingLayer(skipper3)
+
+	var decoded3 []gopacket.LayerType
+	err = parser3.DecodeLayers(packetData, &decoded3)
+	if err != nil {
+		t.Fatalf("DecodeLayers with all exclusions failed: %v", err)
+	}
+
+	// All chunks should be skipped, only SCTP header and payload transitions
+	expectedLayers3 := []gopacket.LayerType{
+		LayerTypeSCTP,
+		gopacket.LayerTypePayload,
+		gopacket.LayerTypePayload,
+		gopacket.LayerTypePayload,
+	}
+
+	if !layersEqual(decoded3, expectedLayers3) {
+		t.Errorf("Skipper with all exclusions: expected %v, got %v", expectedLayers3, decoded3)
+	}
+
+	// Test 4: Gradually add exclusions to an existing skipper
+	skipper4 := &SCTPChunkSkipper{}
+	parser4 := gopacket.NewDecodingLayerParser(LayerTypeSCTP)
+	var sctp4 SCTP
+	var selector4 SCTPChunkSelector
+	var sack4 SCTPSack
+	var data4 SCTPData
+
+	parser4.AddDecodingLayer(&sctp4)
+	parser4.AddDecodingLayer(&selector4)
+	parser4.AddDecodingLayer(skipper4)
+	parser4.AddDecodingLayer(&sack4)
+	parser4.AddDecodingLayer(&data4)
+
+	// First exclude HEARTBEAT only
+	skipper4.Exclude(SCTPChunkTypeHeartbeat)
+
+	var decoded4 []gopacket.LayerType
+	err = parser4.DecodeLayers(packetData, &decoded4)
+	if err != nil {
+		t.Fatalf("DecodeLayers with partial exclusions failed: %v", err)
+	}
+
+	// SACK and DATA should be decoded, HEARTBEAT skipped
+	expectedLayers4 := []gopacket.LayerType{
+		LayerTypeSCTP,
+		gopacket.LayerTypePayload,
+		LayerTypeSCTPSack,
+		gopacket.LayerTypePayload,
+		LayerTypeSCTPData,
+		gopacket.LayerTypePayload,
+	}
+
+	if !layersEqual(decoded4, expectedLayers4) {
+		t.Errorf("Skipper with HEARTBEAT excluded: expected %v, got %v", expectedLayers4, decoded4)
+	}
+}
+
+func TestSCTPChunkSkipperCanDecode(t *testing.T) {
+	tests := []struct {
+		name             string
+		excluded         []SCTPChunkType
+		shouldContain    []gopacket.LayerType
+		shouldNotContain []gopacket.LayerType
+	}{
+		{
+			name:          "no exclusions",
+			excluded:      nil,
+			shouldContain: []gopacket.LayerType{LayerTypeSCTPSack, LayerTypeSCTPData, LayerTypeSCTPHeartbeat},
+		},
+		{
+			name:             "exclude SACK",
+			excluded:         []SCTPChunkType{SCTPChunkTypeSack},
+			shouldContain:    []gopacket.LayerType{LayerTypeSCTPData, LayerTypeSCTPHeartbeat},
+			shouldNotContain: []gopacket.LayerType{LayerTypeSCTPSack},
+		},
+		{
+			name:             "exclude SACK and HEARTBEAT",
+			excluded:         []SCTPChunkType{SCTPChunkTypeSack, SCTPChunkTypeHeartbeat},
+			shouldContain:    []gopacket.LayerType{LayerTypeSCTPData},
+			shouldNotContain: []gopacket.LayerType{LayerTypeSCTPSack, LayerTypeSCTPHeartbeat},
+		},
+		{
+			name:             "exclude all common types",
+			excluded:         []SCTPChunkType{SCTPChunkTypeSack, SCTPChunkTypeData, SCTPChunkTypeHeartbeat},
+			shouldNotContain: []gopacket.LayerType{LayerTypeSCTPSack, LayerTypeSCTPData, LayerTypeSCTPHeartbeat},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			skipper := &SCTPChunkSkipper{}
+			if len(tt.excluded) > 0 {
+				skipper.Exclude(tt.excluded...)
+			}
+
+			canDecode := skipper.CanDecode()
+			decodableTypes := canDecode.LayerTypes()
+
+			// Check that expected types are present
+			for _, expectedType := range tt.shouldContain {
+				found := false
+				for _, actualType := range decodableTypes {
+					if actualType == expectedType {
+						found = true
+						break
+					}
+				}
+				if !found {
+					t.Errorf("Expected %v to be decodable, but it was not found in %v", expectedType, decodableTypes)
+				}
+			}
+
+			// Check that excluded types are not present
+			for _, excludedType := range tt.shouldNotContain {
+				for _, actualType := range decodableTypes {
+					if actualType == excludedType {
+						t.Errorf("Expected %v to not be decodable, but it was found in %v", excludedType, decodableTypes)
+					}
+				}
+			}
+		})
+	}
+}
+
+// Helper function to compare layer slices
+func layersEqual(a, b []gopacket.LayerType) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
 		}
-
-		nextLayer := skipper.NextLayerType()
-		if expectedSkip {
-			if nextLayer != gopacket.LayerTypePayload {
-				t.Errorf("%s: Expected chunk to be skipped (LayerTypePayload), got %v", description, nextLayer)
-			}
-
-			// Check that LayerPayload advances past the current chunk
-			originalLen := len(skipper.data)
-			payloadLen := len(skipper.LayerPayload())
-			expectedAdvance := skipper.header.ActualLength
-			if originalLen-payloadLen != expectedAdvance {
-				t.Errorf("%s: Expected payload to advance by %d bytes, advanced by %d", description, expectedAdvance, originalLen-payloadLen)
-			}
-		} else {
-			if nextLayer == gopacket.LayerTypePayload {
-				t.Errorf("%s: Expected chunk to be processed, but got LayerTypePayload (skip)", description)
-			}
-
-			// Check that LayerPayload returns full data when not skipping
-			if len(skipper.LayerPayload()) != len(skipper.data) {
-				t.Errorf("%s: Expected full data when not skipping", description)
-			}
-		}
 	}
-
-	// Test data for individual chunks
-	sackChunk := packetData[12:28]      // SACK chunk: 16 bytes
-	dataChunk := packetData[28:52]      // DATA chunk: 24 bytes
-	heartbeatChunk := packetData[52:72] // HEARTBEAT chunk: 20 bytes
-
-	// Phase 1: Test zero value skipper (should process all chunk types)
-	var skipper SCTPChunkSkipper
-
-	// Initially should be empty
-	if len(skipper.excluded) != 0 {
-		t.Errorf("Expected 0 excluded types initially, got %d", len(skipper.excluded))
-	}
-
-	// Test that zero value processes all chunk types
-	testSkipperBehavior(&skipper, sackChunk, false, "zero value skipper with SACK")
-	testSkipperBehavior(&skipper, dataChunk, false, "zero value skipper with DATA")
-	testSkipperBehavior(&skipper, heartbeatChunk, false, "zero value skipper with HEARTBEAT")
-
-	// Phase 2: Exclude chunk types manually using Exclude method
-	skipper.Exclude(SCTPChunkTypeSack, SCTPChunkTypeHeartbeat)
-
-	if len(skipper.excluded) != 2 {
-		t.Errorf("Expected 2 excluded types after Exclude, got %d", len(skipper.excluded))
-	}
-
-	// Test that SACK and HEARTBEAT are now excluded but DATA is processed
-	testSkipperBehavior(&skipper, sackChunk, true, "skipper with SACK excluded - SACK should be skipped")
-	testSkipperBehavior(&skipper, dataChunk, false, "skipper with SACK excluded - DATA should be processed")
-	testSkipperBehavior(&skipper, heartbeatChunk, true, "skipper with HEARTBEAT excluded - HEARTBEAT should be skipped")
-
-	// Add DATA type to exclusions
-	skipper.Exclude(SCTPChunkTypeData)
-
-	// Test that all three types are now excluded
-	testSkipperBehavior(&skipper, sackChunk, true, "skipper with SACK+DATA+HEARTBEAT excluded - SACK should be skipped")
-	testSkipperBehavior(&skipper, dataChunk, true, "skipper with SACK+DATA+HEARTBEAT excluded - DATA should be skipped")
-	testSkipperBehavior(&skipper, heartbeatChunk, true, "skipper with SACK+DATA+HEARTBEAT excluded - HEARTBEAT should be skipped")
-
-	// Phase 3: Test creating with DiscardSCTPChunksExcept constructor
-	newSkipper := DiscardSCTPChunksExcept(SCTPChunkTypeSack, SCTPChunkTypeHeartbeat)
-
-	// Test constructor-created skipper behavior
-	testSkipperBehavior(newSkipper, sackChunk, true, "constructor skipper - SACK should be skipped")
-	testSkipperBehavior(newSkipper, dataChunk, false, "constructor skipper - DATA should be processed")
-	testSkipperBehavior(newSkipper, heartbeatChunk, true, "constructor skipper - HEARTBEAT should be skipped")
-
-	// Phase 4: Add more types to constructor-created skipper
-	newSkipper.Exclude(SCTPChunkTypeData)
-
-	// Test that DATA is now excluded
-	testSkipperBehavior(newSkipper, dataChunk, true, "constructor + manual Exclude - DATA should be skipped")
-
-	// Phase 5: Test CanDecode method behavior
-	canDecodeTypes := newSkipper.CanDecode()
-	actualTypes := canDecodeTypes.LayerTypes()
-
-	// With SACK, HEARTBEAT, and DATA excluded, we should have fewer types
-	// The exact count depends on how many standard SCTP chunk types exist
-	if len(actualTypes) == 0 {
-		t.Error("CanDecode should return some decodable types even with exclusions")
-	}
-
-	// Verify that excluded types are not in the CanDecode result
-	excludedLayerTypes := []gopacket.LayerType{LayerTypeSCTPSack, LayerTypeSCTPHeartbeat, LayerTypeSCTPData}
-	for _, excludedType := range excludedLayerTypes {
-		for _, actualType := range actualTypes {
-			if actualType == excludedType {
-				t.Errorf("Excluded type %v should not be in CanDecode result", excludedType)
-			}
-		}
-	}
+	return true
 }
