@@ -107,3 +107,59 @@ func ExampleChunksFrom_decodeFailure() {
 	// Chunk no.2: SCTPData	{Contents=[..24..] Payload=[0, 3, 0, 17] Type=Data Flags=3 Length=23 ActualLength=24 Unordered=false BeginFragment=true EndFragment=true TSN=3780329790 StreamId=0 StreamSequence=1 PayloadProtocol=S1AP UserData=[..7..]}
 	// Chunk no.3: DecodeFailure	decoding SCTP chunk from bytes: invalid SCTP chunk data: not enough bytes
 }
+
+func Example_chunkSelector() {
+	// Performance-oriented parsing requires prior knowledge of the stack's layers.
+	parser := gopacket.NewDecodingLayerParser(layers.LayerTypeLinuxSLL)
+	// For this example this is quite easy, we know the entire packet in advance.
+	//
+	// However, users rarely know which SCTP chunks are present in any SCTP packet
+	// because the standard supports bundling of multiple chunks into a single SCTP
+	// packet. As a result, callers may want to ignore some less interesting chunk
+	// types.
+	//
+	// For this reason, this package provides a DecodingLayer that discard most SCTP
+	// chunks: SCTPChunkSkipper.
+	var (
+		link      = new(layers.LinuxSLL)
+		network   = new(layers.IPv4)
+		transport = new(layers.SCTP)
+		data      = new(layers.SCTPData)
+	)
+	parser.AddDecodingLayer(link)
+	parser.AddDecodingLayer(network)
+	parser.AddDecodingLayer(transport)
+	// We can use the layers.SCTPChunkSelector to selectively decode SCTP chunks
+	// based on their type. Callers may choose Strict mode to prevent fail fast when
+	// attempting to decode unknown chunk types.
+	parser.AddDecodingLayer(&layers.SCTPChunkSelector{Strict: true})
+	// We can use the sctpdefrag.SCTPChunkSkipper to discard irrelevant chunks. We must
+	// exclude interesting chunk types that we do want to decode.
+	//
+	// Though it is possible to achieve the same result by adding the zero
+	// sctpdefrag.SCTPChunkSkipper, if and only if we also add the DecodingLayers for the
+	// interesting chunk types AFTER adding that skipper. Any of the afterwards calls
+	// to AddDecodingLayer would overwrite the DecodingLayer set by previous ones.
+	// Nonetheless, stating the interesting layers explicitly is clearer.
+	parser.AddDecodingLayer(sctpdefrag.DiscardSCTPChunksExcept(layers.SCTPChunkTypeData))
+	parser.AddDecodingLayer(data)
+
+	// After registering the layers, we can decode the packet data.
+	var decoded []gopacket.LayerType
+	err := parser.DecodeLayers(ExamplePacketData, &decoded)
+	if err != nil {
+		panic(err)
+	}
+	fmt.Println("Decoded layers:", decoded)
+	fmt.Println("Decoded link layer:", gopacket.LayerString(link))
+	fmt.Println("Decoded network layer:", gopacket.LayerString(network))
+	fmt.Println("Decoded transport layer:", gopacket.LayerString(transport))
+	fmt.Println("Decoded DATA chunk:", gopacket.LayerString(data))
+
+	// Output:
+	// Decoded layers: [Linux SLL IPv4 SCTP Payload SCTPSack Payload SCTPData]
+	// Decoded link layer: Linux SLL	{Contents=[..16..] Payload=[..72..] PacketType=outgoing AddrLen=6 Addr=2c:a5:39:00:1f:36 EthernetType=IPv4 AddrType=16}
+	// Decoded network layer: IPv4	{Contents=[..20..] Payload=[..52..] Version=4 IHL=5 TOS=0 Length=72 Id=0 Flags=DF FragOffset=0 TTL=64 Protocol=SCTP Checksum=9546 SrcIP=10.53.0.25 DstIP=10.43.0.112 Options=[] Padding=[]}
+	// Decoded transport layer: SCTP	{Contents=[..12..] Payload=[..40..] SrcPort=36412(s1-control) DstPort=36412(s1-control) VerificationTag=66993176 Checksum=3540262820}
+	// Decoded DATA chunk: SCTPData	{Contents=[..24..] Payload=[] Type=Data Flags=3 Length=23 ActualLength=24 Unordered=false BeginFragment=true EndFragment=true TSN=3780329790 StreamId=0 StreamSequence=1 PayloadProtocol=S1AP UserData=[..7..]}
+}
