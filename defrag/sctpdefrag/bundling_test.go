@@ -45,7 +45,7 @@ func TestIteratingChunks(t *testing.T) {
 		if chunk.LayerType() != expected[i] {
 			t.Errorf("Chunk #%v = %v, want %v", i, chunk.LayerType(), expected[i])
 		}
-		t.Logf("Chunk #%v = %v", i, gopacket.LayerString(chunk))
+		t.Logf("Chunk #%v:\n%v", i, gopacket.LayerDump(chunk))
 		return true // Continue iterating.
 	})
 
@@ -60,6 +60,13 @@ func TestIteratingChunks(t *testing.T) {
 		diff := bytediff.Diff(buf.Bytes(), testBundleData)
 		t.Errorf("Serialized data differs from input (got->want):\n%v", bytediff.BashOutput.String(diff))
 	}
+}
+
+func reverseLayers(layers []gopacket.SerializableLayer) []gopacket.SerializableLayer {
+	for i, j := 0, len(layers)-1; i < j; i, j = i+1, j-1 {
+		layers[i], layers[j] = layers[j], layers[i]
+	}
+	return layers
 }
 
 func BenchmarkChunks(b *testing.B) {
