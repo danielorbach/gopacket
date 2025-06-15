@@ -1,16 +1,16 @@
 package sctpdefrag
 
 import (
-	"bytes"
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"github.com/google/gopacket"
-	"github.com/google/gopacket/layers"
 	"math"
 	"sort"
 	"strconv"
 	"strings"
+
+	"github.com/google/gopacket"
+	"github.com/google/gopacket/layers"
 )
 
 // Defragmenter reassembles SCTP DATA chunks that have been fragmented.
@@ -23,6 +23,8 @@ type Defragmenter struct {
 	// Maps stream identifier and sequence number to a list of fragments.
 	reassembly map[messageKey]*messageContext
 }
+
+// TODO: document package.
 
 // TODO: expose statistics (processed chunks, reassembled chunks, invalid chunks, invalid internal states, etc).
 
@@ -116,16 +118,24 @@ func (d *Defragmenter) DefragData(data *layers.SCTPData) (complete *layers.SCTPD
 func checkDataChunk(data *layers.SCTPData) error {
 	// We only support DATA chunks.
 	if data.Type != layers.SCTPChunkTypeData {
-		return fmt.Errorf("unsupported chunk type %q", data.Type)
+		return fmt.Errorf("unexpected chunk type %q", data.Type)
 	}
-	// DATA chunks always have 16 bytes of header.
-	if data.ActualLength != 16 {
-		return fmt.Errorf("malformed chunk header")
+	// A DATA chunk has at least 1 byte of payload.
+	if data.ActualLength <= 16 {
+		return fmt.Errorf("malformed chunk header: DATA chunks requires more than %v bytes", data.ActualLength)
 	}
-	// The Length field references the payload and the header, without padding.
-	length := data.ActualLength + len(data.Payload)
-	if int(data.Length) != length {
-		return fmt.Errorf("payload length mismatch")
+	// A DATA chunk's actual length includes the padding, if any. As such, it cannot
+	// be less than the Length field, which excludes any padding.
+	if data.ActualLength < int(data.Length) {
+		return fmt.Errorf("malformed chunk header: unexpected chunk lengths (padded=%v, unpadded=%v)", data.ActualLength, data.Length)
+	}
+	// The Length field includes the common chunk header and its type-specific
+	// content, excluding any padding. The common chunk header and DATA-specific
+	// fields occupy the first 16 bytes of the chunk. The user-supplied data payload
+	// immediately follows.
+	length := int(data.Length) - 16
+	if len(data.UserData) != length {
+		return fmt.Errorf("truncated user data: payload with %v out of %v bytes", len(data.UserData), length)
 	}
 	return nil
 }
@@ -209,15 +219,10 @@ func beginMessageReassembly(data *layers.SCTPData) *messageContext {
 // It copies the payload from the layer because packets may become invalid by the
 // time the next chunk is processed.
 func (m *messageContext) append(data *layers.SCTPData) {
-	// We use the Length field, instead of len(data.Payload), because the latter
-	// includes padding (to a 4-byte boundary). While the former includes the chunk's
-	// header, this can be overcome by subtracting data.ActualLength (always 16
-	// bytes).
-	length := int(data.Length) - data.ActualLength
 	// We must copy the user data from the layer to ensure that it remains valid
 	// until we reassemble the message.
-	userData := make([]byte, length)
-	copy(userData, data.Payload) // Copies without the padding.
+	userData := make([]byte, len(data.UserData))
+	copy(userData, data.UserData) // Copies without the padding.
 	m.fragments = append(m.fragments, fragment{
 		TSN:           data.TSN,
 		UserData:      userData,
@@ -240,13 +245,6 @@ var (
 //   - The Content field is ni. Serialise the returned SCTPData to compute it.
 //   - The BeginFragment and EndFragment flags are set.
 func (m *messageContext) reassemble() (*layers.SCTPData, error) {
-	// First, we sum up the total length of all fragments to allocate the correct
-	// amount of memory for the reassembled payload, once.
-	var size int
-	for _, frag := range m.fragments {
-		size += len(frag.UserData)
-	}
-
 	// We may have observed fragments out-of-order, so we must sort them by TSN
 	// before reassembling them.
 	sort.Slice(m.fragments, func(i, j int) bool {
@@ -254,7 +252,7 @@ func (m *messageContext) reassemble() (*layers.SCTPData, error) {
 	})
 	// We also want to ensure that the fragments are indeed strictly sequential, as
 	// the RFC mandates. Though ordered, the TSN values are not necessarily
-	// consecutive. For example, we may have missed a fragment, but still called this
+	// consecutive. For example, we may have missed a fragment but still called this
 	// function.
 	for i := 1; i < len(m.fragments); i++ {
 		step := m.fragments[i].TSN - m.fragments[i-1].TSN
@@ -271,22 +269,6 @@ func (m *messageContext) reassemble() (*layers.SCTPData, error) {
 		return nil, errMissingEndFragment
 	}
 
-	// Then, we can allocate the appropriate buffer and COPY all fragments into it.
-	var userData bytes.Buffer
-	userData.Grow(size)
-	for _, frag := range m.fragments {
-		userData.Write(frag.UserData)
-	}
-
-	/*
-		// We must round the length to the nearest 4-byte boundary, as the RFC mandates.
-		// Nonetheless, we don't pad the payload, in accordance with the SCTPData layer.
-		var padding int
-		if userData.Len()%4 != 0 {
-			padding = 4 - (userData.Len() % 4)
-		}
-	*/
-
 	// The Flags field is composed of three flags: U, B, and E. While B and E are
 	// always on for whole messages, U is only on if the Unordered field is set.
 	var flags uint8 = 0b0011 // B and E are always on.
@@ -294,29 +276,25 @@ func (m *messageContext) reassemble() (*layers.SCTPData, error) {
 		flags |= 0b0100 // U is on if the Unordered field is set.
 	}
 
-	// The length field of a DATA chunk with a User Data field of length L will have
-	// the Length field set to (16 + L), indicating 16+L bytes, where L MUST be
-	// greater than 0.
-	length := 16 + userData.Len()
-	if length > math.MaxUint16 {
-		return nil, errUserDataTooLong
+	// Serialise the synthetic chunk's byte representation to store as the contents
+	// of the SCTPData layer.
+	content, userData, err := m.serialiseContent()
+	if err != nil {
+		return nil, fmt.Errorf("synthesize chunk: %w", err)
 	}
-	// Serialise the chunk's header to store as the contents of the SCTPData layer.
-	var chunkHeader [16]byte
-	m.serialiseChunkHeader(&chunkHeader, uint16(length))
 	// Finally, we can create a synthetic chunk with the reassembled User Data payload.
 	return &layers.SCTPData{
 		SCTPChunk: layers.SCTPChunk{
 			BaseLayer: layers.BaseLayer{
-				Contents: chunkHeader[:],
-				Payload:  userData.Bytes(),
+				Contents: content,
+				Payload:  nil, // A DATA chunk's UserData is part of its content.
 			},
 			Type:  layers.SCTPChunkTypeData,
 			Flags: flags,
 			// This field indicates the length of the DATA chunk in bytes from the beginning
-			// of the type field to the end of the User Data field, excluding any padding.
-			Length:       uint16(length),
-			ActualLength: 16, // DATA chunks are always 16 bytes long.
+			// of the type field to the end of the UserData field, excluding any padding.
+			Length:       uint16(16 + len(userData)),
+			ActualLength: len(content),
 		},
 		Unordered:       m.Unordered, // Preserve the Unordered flag.
 		BeginFragment:   true,        // Reassembled chunks always have the first bytes of a message.
@@ -325,6 +303,7 @@ func (m *messageContext) reassemble() (*layers.SCTPData, error) {
 		StreamId:        m.StreamId,
 		StreamSequence:  m.StreamSequence,
 		PayloadProtocol: m.PayloadProtocol,
+		UserData:        userData,
 	}, nil
 }
 
@@ -332,20 +311,58 @@ func (m *messageContext) reassemble() (*layers.SCTPData, error) {
 //
 // The length field is the length of the DATA chunk, including the header and the
 // user data, excluding any padding.
-func (m *messageContext) serialiseChunkHeader(buf *[16]byte, length uint16) {
-	buf[0] = uint8(layers.SCTPChunkTypeData)
-	flags := uint8(0)
-	if m.Unordered {
-		flags |= 0x4
+//
+// This function assumes that all message fragments have been collected and
+// sorted already (that is, no chunk is missing from the sequence).
+func (m *messageContext) serialiseContent() (content []byte, userData []byte, err error) {
+	// First, we sum up the total length of all fragments to allocate the correct
+	// amount of memory for the reassembled payload, once.
+	var size int
+	for _, frag := range m.fragments {
+		size += len(frag.UserData)
 	}
-	flags |= 0x2 // The B flag (BeginFragment) is always set for whole messages.
-	flags |= 0x1 // The E flag (EndFragment) is always set for whole messages.
-	buf[1] = flags
-	binary.BigEndian.PutUint16(buf[2:4], length)
-	binary.BigEndian.PutUint32(buf[4:8], 0) // TSN is always 0 for reassembled messages.
-	binary.BigEndian.PutUint16(buf[8:10], m.StreamId)
-	binary.BigEndian.PutUint16(buf[10:12], m.StreamSequence)
-	binary.BigEndian.PutUint32(buf[12:16], uint32(m.PayloadProtocol))
+	// The length field of a DATA chunk with a UserData field of length L will have
+	// the Length field set to (16 + L), indicating 16+L bytes, where L MUST be
+	// greater than 0.
+	length := 16 + size // Must be int to prevent uint16 overflows.
+	// Though supported by SCTP, supporting messages larger than 64KB would require
+	// more complexity from users. By upholding this limitation, we provide users
+	// with familiar DATA chunks.
+	if length > math.MaxUint16 {
+		return nil, nil, errUserDataTooLong
+	}
+	// The Length field does not include any padding, but a valid chunk is always
+	// padded to a 4-byte boundary.
+	actual := roundUpToNearest4(uint16(length))
+
+	// We allocate the underlying memory only once for efficiency.
+	content = make([]byte, actual)
+	// Now we are ready to fill in the content of a synthetic DATA chunk that would
+	// carry the entire message. In a theoretical and ideal network, this single
+	// chunk would be enough to prevent the message from fragmenting.
+	content[0] = uint8(layers.SCTPChunkTypeData)
+	flags := uint8(0b0011) // The B and E flags are always set for unfragmented messages.
+	if m.Unordered {
+		flags |= 0b0100
+	}
+	content[1] = flags
+	binary.BigEndian.PutUint16(content[2:4], uint16(length)) // No integer overflow guaranteed by earlier checks.
+	binary.BigEndian.PutUint32(content[4:8], 0)              // TSN is always 0 for reassembled messages.
+	binary.BigEndian.PutUint16(content[8:10], m.StreamId)
+	binary.BigEndian.PutUint16(content[10:12], m.StreamSequence)
+	binary.BigEndian.PutUint32(content[12:16], uint32(m.PayloadProtocol))
+
+	// All that's left now is to COPY all fragments into the chunk's content buffer.
+	// Any padding bytes are already allocated and zeroed.
+	offset := 16
+	for _, frag := range m.fragments {
+		copy(content[offset:], frag.UserData)
+		offset += len(frag.UserData)
+	}
+	// The userData slice overlaps with the entire content, spanning from the 17th
+	// byte until the padding (excluding).
+	userData = content[16:offset]
+	return content, userData, nil
 }
 
 // A fragment holds a portion of a user message.

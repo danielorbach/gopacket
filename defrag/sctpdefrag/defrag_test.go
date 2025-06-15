@@ -3,13 +3,15 @@ package sctpdefrag_test
 import (
 	"bytes"
 	_ "embed"
+	"testing"
+
+	"github.com/google/go-cmp/cmp"
+	"github.com/google/go-cmp/cmp/cmpopts"
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/bytediff"
 	"github.com/google/gopacket/defrag/sctpdefrag"
 	"github.com/google/gopacket/layers"
 	"github.com/google/gopacket/pcapgo"
-	"reflect"
-	"testing"
 )
 
 func TestDefragmentation(t *testing.T) {
@@ -31,7 +33,7 @@ func TestDefragmentation(t *testing.T) {
 		chunk := p.Layer(layers.LayerTypeSCTPData).(*layers.SCTPData)
 		reassembled, err = defrag.DefragData(chunk)
 		if err != nil {
-			t.Logf("Decoding %v", gopacket.LayerString(chunk))
+			t.Logf("Decoded chunk = %v", gopacket.LayerString(chunk))
 			t.Errorf("DefragData(TSN=%v): %v", chunk.TSN, err)
 		}
 	}
@@ -40,24 +42,28 @@ func TestDefragmentation(t *testing.T) {
 	}
 
 	// We check that the reassembled message is as expected.
-	if !bytes.Equal(reassembled.Payload, defragmentedMessage) {
-		diff := bytediff.Diff(reassembled.Payload, defragmentedMessage)
+	if !bytes.Equal(reassembled.Payload(), defragmentedMessage) {
+		diff := bytediff.Diff(reassembled.Payload(), defragmentedMessage)
 		t.Errorf("Reassembly produced the wrong message (BASH-colorized diff, got->want):\n%v\n---PACKET (reassembled)---\n%v", bytediff.BashOutput.String(diff), gopacket.LayerDump(reassembled))
 	}
+
 	// And that the synthetic layer is a valid SCTP DATA chunk that can be serialised
-	// correctly. We achieve that by serialising both the header and data, then
-	// decoding a DATA chunk back from the serialised buffer.
+	// correctly. We achieve that by serialising the synthetic layer, then decoding a
+	// DATA chunk back from the serialised buffer.
 	buf := gopacket.NewSerializeBuffer()
 	opts := gopacket.SerializeOptions{FixLengths: true, ComputeChecksums: true}
-	if err := gopacket.SerializeLayers(buf, opts, reassembled, gopacket.Payload(reassembled.Payload)); err != nil {
+	if err := gopacket.SerializeLayers(buf, opts, reassembled); err != nil {
 		t.Fatalf("SerializeLayers(SCTPData) = %v", err)
 	}
-	reconstructed := new(layers.SCTPData)
-	if err := reconstructed.DecodeFromBytes(buf.Bytes(), gopacket.NilDecodeFeedback); err != nil {
+	sanity := new(layers.SCTPData)
+	if err := sanity.DecodeFromBytes(buf.Bytes(), gopacket.NilDecodeFeedback); err != nil {
 		t.Fatalf("DecodeFromBytes(SCTPData) = %v", err)
 	}
-	if !reflect.DeepEqual(reconstructed, reassembled) {
-		t.Errorf("Reassembled DATA chunk did not serialize/deserialize correctly:\n---deserialized---\n%v\n---defragmented---\n%v", gopacket.LayerDump(reconstructed), gopacket.LayerDump(reassembled))
+	var cmpOpts = []cmp.Option{
+		cmpopts.EquateEmpty(), // A nil Payload (<nil>) equals a zero-length Payload ([]byte{}).
+	}
+	if diff := cmp.Diff(reassembled, sanity, cmpOpts...); diff != "" {
+		t.Errorf("Reassembled DATA chunk did not serialize->deserialize correctly (-want +got):\n%v", diff)
 	}
 }
 
