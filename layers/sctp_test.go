@@ -607,100 +607,85 @@ var sctpTestPacketUnknown = []byte{
 //	|----|----|--------|---------|--|--|----|--------|----|----|--------|-------|--|
 //	|8e3c|8e3c|03fe3c18|9a730e6f |00|03|0013|e153413d|0002|0001|00000012|010203 |00|
 //
-// Test progression (each step tests truncation detection):
-//  1. SCTP Header only (12 bytes) → Valid empty packet
-//  2. + ChunkType (1 byte) → Truncated
-//  3. + Flags+Length (3 bytes) → Truncated
-//  4. + TSN+SID+SSN+PPID (13 bytes) → Truncated
-//  5. + User Data (3 bytes) → Truncated
-//  6. + Padding (1 byte) → Complete valid packet
+// Test progression concatenates each portion to the previous packet data. Not
+// all failures to decode are considered truncated by gopacket. Packets are
+// "truncated" only when the size of the packet does not accommodate enough bytes
+// to satisfy a size set by an internal field.
 func TestDecodingTruncatedSCTPChunks(t *testing.T) {
-	// First, let's test decoding an SCTP packet with no chunks at all. An SCTP
-	// packet may be "blank" containing no chunks; it does not constitute an error.
-	//
-	// SCTP DATA chunk header: 0/16 bytes.
-	// SCTP DATA user-data: 0/3 bytes.
-	// SCTP chunk padding: 0/1 bytes.
-	packetData := []byte{
-		0x8e, 0x3c, 0x8e, 0x3c, 0x03, 0xfe, 0x3c, 0x18, 0x9a, 0x73, 0x0e, 0x6f,
+	var portions = []struct {
+		description string
+		bytes       []byte
+		err         bool
+		truncated   bool
+	}{
+		{
+			description: "sctp header",
+			bytes:       []byte{0x8e, 0x3c, 0x8e, 0x3c, 0x03, 0xfe, 0x3c, 0x18, 0x9a, 0x73, 0x0e, 0x6f},
+			err:         false, // Valid empty SCTP packet.
+			truncated:   false, // No internal size fields to violate.
+		},
+		{
+			description: "chunk type",
+			bytes:       []byte{0x00}, // ChunkType = DATA.
+			err:         true,         // Incomplete chunk header - missing flags and length.
+			truncated:   false,        // No length field is present yet.
+		},
+		{
+			description: "flags",
+			bytes:       []byte{0x03}, // Flags = Ordered & Begin & End.
+			err:         true,         // Incomplete chunk header - missing length field.
+			truncated:   false,        // No length field is present yet.
+		},
+		{
+			description: "chunk length",
+			bytes:       []byte{0x00, 0x13}, // Length = 19 (ActualLength = 20).
+			err:         true,               // Length field claims more data than available.
+			truncated:   true,               // Data shorter than the length field indicates.
+		},
+		{
+			description: "message fields",
+			bytes: []byte{
+				0xe1, 0x53, 0x41, 0x3d, // TSN = 3780329789.
+				0x00, 0x02, // StreamId = 2.
+				0x00, 0x01, // StreamSequence = 1.
+				0x00, 0x00, 0x00, 0x12, // PayloadProtocol = S1AP.
+			},
+			err:       true, // Length field still claims more data than available.
+			truncated: true, // Payload data missing per length field.
+		},
+		{
+			description: "incomplete user data",
+			bytes:       []byte{0x01, 0x02}, // The first segment of the UserData.
+			err:         true,               // Length field still claims more data than available.
+			truncated:   true,               // Partial payload - missing final byte.
+		},
+		{
+			description: "complete user data",
+			bytes:       []byte{0x03}, // Completes the UserData.
+			err:         true,         // Missing required padding for 4-byte alignment.
+			truncated:   false,        // Length field satisfied, padding issue.
+		},
+		{
+			description: "padding",
+			bytes:       []byte{0x00},
+			err:         false, // Packet now complete and properly padded.
+			truncated:   false, // All length requirements satisfied.
+		},
 	}
-	p := gopacket.NewPacket(packetData, LayerTypeSCTP, gopacket.NoCopy)
-	if p.ErrorLayer() != nil {
-		t.Errorf("NewPacket(blank SCTP packet) = %v; want nil", p.ErrorLayer())
-	}
-	if p.Metadata().Truncated {
-		t.Errorf("NewPacket(blank SCTP packet) marked as truncated, but it should not be")
-	}
 
-	// Now, let's append only the ChunkType field.
-	//
-	// SCTP DATA chunk header: 1/16 bytes.
-	// SCTP DATA user-data: 0/3 bytes.
-	// SCTP chunk padding: 0/1 bytes.
-	packetData = append(packetData,
-		0x00, // ChunkType = DATA
-	)
-	testTruncatedPacketOnSCTP(t, packetData, "chunk-type only")
-
-	// Now, let's append only the Flags and Length fields.
-	//
-	// SCTP DATA chunk header: 3/16 bytes.
-	// SCTP DATA user-data: 0/3 bytes.
-	// SCTP chunk padding: 0/1 bytes.
-	packetData = append(packetData,
-		0x03,       // Flags = Ordered, Begin, End
-		0x00, 0x13, // Length = 19
-	)
-	testTruncatedPacketOnSCTP(t, packetData, "incomplete chunk")
-
-	// Now, let's append the rest of the DATA header.
-	//
-	// SCTP DATA chunk header: 16/16 bytes.
-	// SCTP DATA user-data: 0/3 bytes.
-	// SCTP chunk padding: 0/1 bytes.
-	packetData = append(packetData,
-		0xe1, 0x53, 0x41, 0x3d, // TSN = 3780329789
-		0x00, 0x02, // StreamId = 2
-		0x00, 0x01, // StreamSequence = 1
-		0x00, 0x00, 0x00, 0x12, // PayloadProtocol = S1AP
-	)
-	testTruncatedPacketOnSCTP(t, packetData, "without payload")
-
-	// Now, let's append the user-data of the DATA chunk.
-	//
-	// SCTP DATA chunk header: 16/16 bytes.
-	// SCTP DATA user-data: 3/3 bytes.
-	// SCTP chunk padding: 0/1 bytes.
-	packetData = append(packetData, 0x01, 0x02, 0x03)
-	testTruncatedPacketOnSCTP(t, packetData, "without padding")
-
-	// Finally, let's complete the DATA chunk by appending the padding byte.
-	//
-	// SCTP DATA chunk header: 16/16 bytes.
-	// SCTP DATA user-data: 3/3 bytes.
-	// SCTP chunk padding: 1/1 bytes.
-	packetData = append(packetData, 0x00)
-	p = gopacket.NewPacket(packetData, LayerTypeSCTP, gopacket.NoCopy)
-	if p.ErrorLayer() != nil {
-		t.Errorf("NewPacket(full SCTP packet) = %v; want nil", p.ErrorLayer())
-	}
-	if p.Metadata().Truncated {
-		t.Errorf("NewPacket(full SCTP packet) marked as truncated, but it should not be")
-	}
-}
-
-func testTruncatedPacketOnSCTP(t *testing.T, packetData []byte, description string) {
-	t.Helper()
-
-	p := gopacket.NewPacket(packetData, LayerTypeSCTP, gopacket.NoCopy)
-	t.Logf("NewPacket(%v).ErrorLayer() = %v", description, p.ErrorLayer())
-	// We know SCTP truncated packets are not decoded successfully.
-	if p.ErrorLayer() == nil {
-		t.Errorf("NewPacket(%v) did not set an error layer", description)
-	}
-	// When the given data is truncated, the returned packet should be marked as
-	// such.
-	if !p.Metadata().Truncated {
-		t.Errorf("NewPacket(%v) did not mark the packet as truncated", description)
+	var packetData []byte
+	for _, tt := range portions {
+		t.Logf("Building packet with %s on top of previous buffer", tt.description)
+		packetData = append(packetData, tt.bytes...)
+		p := gopacket.NewPacket(packetData, LayerTypeSCTP, gopacket.NoCopy)
+		if tt.err && p.ErrorLayer() == nil {
+			t.Errorf("NewPacket() error = %v, want non-nil", nil)
+		}
+		if !tt.err && p.ErrorLayer() != nil {
+			t.Errorf("NewPacket() error = %v, want nil", p.ErrorLayer())
+		}
+		if p.Metadata().Truncated != tt.truncated {
+			t.Errorf("NewPacket() truncated = %v, want %v", p.Metadata().Truncated, tt.truncated)
+		}
 	}
 }

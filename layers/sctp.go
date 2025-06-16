@@ -118,7 +118,6 @@ func roundUpToNearest4(i int) int {
 // The chunk layers in this file each decode the "chunk-specific" content.
 func (c *SCTPChunk) DecodeFromBytes(data []byte, df gopacket.DecodeFeedback) error {
 	if len(data) < 4 {
-		df.SetTruncated()
 		return errors.New("insufficient data for SCTP chunk header")
 	}
 	// The Length field in the SCTP chunk header counts from the first byte (that's
@@ -142,7 +141,6 @@ func (c *SCTPChunk) DecodeFromBytes(data []byte, df gopacket.DecodeFeedback) err
 	// SerializeTo properly padded packets.
 	actual := roundUpToNearest4(int(length))
 	if len(data) < actual {
-		df.SetTruncated()
 		return errors.New("invalid SCTP chunk data: not enough padding")
 	}
 
