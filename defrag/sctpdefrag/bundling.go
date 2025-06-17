@@ -10,24 +10,12 @@ import (
 
 func ChunksFrom(payload []byte) func(yield func(i int, chunk gopacket.Layer) bool) {
 	return func(yield func(i int, chunk gopacket.Layer) bool) {
-		// Predefining the variables to avoid dynamic allocations inside the loop.
-		var (
-			sctpData             layers.SCTPData
-			sctpInit             layers.SCTPInit
-			sctpSack             layers.SCTPSack
-			sctpHeartbeat        layers.SCTPHeartbeat
-			sctpError            layers.SCTPError
-			sctpShutdown         layers.SCTPShutdown
-			sctpShutdownAck      layers.SCTPShutdownAck
-			sctpCookieEcho       layers.SCTPCookieEcho
-			sctpEmptyLayer       layers.SCTPEmptyLayer
-			sctpUnknownChunkType layers.SCTPUnknownChunkType
-		)
 		for i := 0; len(payload) != 0; i++ {
 			failure := &DecodeChunkFailure{data: payload}
 			chunkType := layers.SCTPChunkType(payload[0])
 			switch chunkType {
 			case layers.SCTPChunkTypeData:
+				var sctpData layers.SCTPData
 				if err := sctpData.DecodeFromBytes(payload, failure); err != nil {
 					failure.err = err
 					yield(i, failure)
@@ -38,6 +26,7 @@ func ChunksFrom(payload []byte) func(yield func(i int, chunk gopacket.Layer) boo
 				}
 				payload = sctpData.LayerPayload()
 			case layers.SCTPChunkTypeInit, layers.SCTPChunkTypeInitAck:
+				var sctpInit layers.SCTPInit
 				if err := sctpInit.DecodeFromBytes(payload, failure); err != nil {
 					failure.err = err
 					yield(i, failure)
@@ -48,6 +37,7 @@ func ChunksFrom(payload []byte) func(yield func(i int, chunk gopacket.Layer) boo
 				}
 				payload = sctpInit.LayerPayload()
 			case layers.SCTPChunkTypeSack:
+				var sctpSack layers.SCTPSack
 				if err := sctpSack.DecodeFromBytes(payload, failure); err != nil {
 					failure.err = err
 					yield(i, failure)
@@ -58,6 +48,7 @@ func ChunksFrom(payload []byte) func(yield func(i int, chunk gopacket.Layer) boo
 				}
 				payload = sctpSack.LayerPayload()
 			case layers.SCTPChunkTypeHeartbeat, layers.SCTPChunkTypeHeartbeatAck:
+				var sctpHeartbeat layers.SCTPHeartbeat
 				if err := sctpHeartbeat.DecodeFromBytes(payload, failure); err != nil {
 					failure.err = err
 					yield(i, failure)
@@ -68,6 +59,7 @@ func ChunksFrom(payload []byte) func(yield func(i int, chunk gopacket.Layer) boo
 				}
 				payload = sctpHeartbeat.LayerPayload()
 			case layers.SCTPChunkTypeAbort, layers.SCTPChunkTypeError:
+				var sctpError layers.SCTPError
 				if err := sctpError.DecodeFromBytes(payload, failure); err != nil {
 					failure.err = err
 					yield(i, failure)
@@ -78,6 +70,7 @@ func ChunksFrom(payload []byte) func(yield func(i int, chunk gopacket.Layer) boo
 				}
 				payload = sctpError.LayerPayload()
 			case layers.SCTPChunkTypeShutdown:
+				var sctpShutdown layers.SCTPShutdown
 				if err := sctpShutdown.DecodeFromBytes(payload, failure); err != nil {
 					failure.err = err
 					yield(i, failure)
@@ -88,6 +81,7 @@ func ChunksFrom(payload []byte) func(yield func(i int, chunk gopacket.Layer) boo
 				}
 				payload = sctpShutdown.LayerPayload()
 			case layers.SCTPChunkTypeShutdownAck:
+				var sctpShutdownAck layers.SCTPShutdownAck
 				if err := sctpShutdownAck.DecodeFromBytes(payload, failure); err != nil {
 					failure.err = err
 					yield(i, failure)
@@ -98,6 +92,7 @@ func ChunksFrom(payload []byte) func(yield func(i int, chunk gopacket.Layer) boo
 				}
 				payload = sctpShutdownAck.LayerPayload()
 			case layers.SCTPChunkTypeCookieEcho:
+				var sctpCookieEcho layers.SCTPCookieEcho
 				if err := sctpCookieEcho.DecodeFromBytes(payload, failure); err != nil {
 					failure.err = err
 					yield(i, failure)
@@ -108,6 +103,7 @@ func ChunksFrom(payload []byte) func(yield func(i int, chunk gopacket.Layer) boo
 				}
 				payload = sctpCookieEcho.LayerPayload()
 			case layers.SCTPChunkTypeCookieAck, layers.SCTPChunkTypeShutdownComplete:
+				var sctpEmptyLayer layers.SCTPEmptyLayer
 				if err := sctpEmptyLayer.DecodeFromBytes(payload, failure); err != nil {
 					failure.err = err
 					yield(i, failure)
@@ -118,6 +114,7 @@ func ChunksFrom(payload []byte) func(yield func(i int, chunk gopacket.Layer) boo
 				}
 				payload = sctpEmptyLayer.LayerPayload()
 			default:
+				var sctpUnknownChunkType layers.SCTPUnknownChunkType
 				if err := sctpUnknownChunkType.DecodeFromBytes(payload, failure); err != nil {
 					failure.err = err
 					yield(i, failure)

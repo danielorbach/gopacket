@@ -45,12 +45,12 @@ func ExampleChunksFrom() {
 	// The SCTP payload contains chunks, which we can decode further using the
 	// ChunksFrom function.
 	for i, chunk := range sctpdefrag.ChunksFrom(chunks) {
-		// Note that the chunk variable is only valid for the duration of each loop
-		// iteration. That is, by the time this function returns, the chunk variable is
-		// no longer valid.
+		// Note that each chunk variable is valid after the loop iteration completes.
+		// That is, callers may store the layer and reference it even after the entire
+		// for-loop completes.
 		//
-		// I currently do not know of a way to copy layers, making it impossible to
-		// collect all the chunks of a packet using ChunksFrom.
+		// This implies that ChunksFrom allocates a new value for every chunk it
+		// encounters.
 		fmt.Printf("Chunk no.%v: %v\n", i+1, gopacket.LayerString(chunk))
 	}
 
