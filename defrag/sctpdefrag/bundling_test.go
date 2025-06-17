@@ -2,8 +2,6 @@ package sctpdefrag
 
 import (
 	"bytes"
-	"fmt"
-	"io"
 	"testing"
 
 	"github.com/google/gopacket"
@@ -32,14 +30,15 @@ func TestIteratingChunks(t *testing.T) {
 	// We collect all chunks because the decoded chunks should serialise back to the
 	// original packet data.
 	var chunks []gopacket.SerializableLayer
-	ChunksFrom(testBundleData)(func(i int, chunk gopacket.Layer) bool {
+	for i, chunk := range ChunksFrom(testBundleData) {
+		t.Logf("Chunk #%v:\n%v", i, gopacket.LayerDump(chunk))
 		if i >= len(expected) {
 			t.Errorf("Unexpected chunk #%v = %v", i, chunk.LayerType())
-			return false // Break from the loop.
+			continue
 		}
 		if chunk.LayerType() == gopacket.LayerTypeDecodeFailure {
 			t.Errorf("Failed to decode chunk #%v: %v", i, chunk.(gopacket.ErrorLayer).Error())
-			return true // Continue iterating.
+			continue
 		}
 		// We only collect SerializableLayers, so we can serialise them later and compare
 		// to the input data.
@@ -47,9 +46,7 @@ func TestIteratingChunks(t *testing.T) {
 		if chunk.LayerType() != expected[i] {
 			t.Errorf("Chunk #%v = %v, want %v", i, chunk.LayerType(), expected[i])
 		}
-		t.Logf("Chunk #%v:\n%v", i, gopacket.LayerDump(chunk))
-		return true // Continue iterating.
-	})
+	}
 
 	// Once we've collected all chunks, we re-serialise into bytes and compare with
 	// the source bytes.
@@ -66,18 +63,12 @@ func TestIteratingChunks(t *testing.T) {
 
 func BenchmarkChunks(b *testing.B) {
 	b.ReportAllocs()
-
-	var disableOptimisation gopacket.Layer
-	benchmark := func(i int, chunk gopacket.Layer) bool {
-		disableOptimisation = chunk
-		return true
+	for b.Loop() {
+		for range ChunksFrom(testBundleData) {
+			// No need to do anything with the chunks because b.Loop disables all
+			// optimisations inside the loop.
+		}
 	}
-
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		ChunksFrom(testBundleData)(benchmark)
-	}
-	fmt.Fprintln(io.Discard, disableOptimisation)
 }
 
 // This SCTP packet payload contains a predefined byte sequence used for testing

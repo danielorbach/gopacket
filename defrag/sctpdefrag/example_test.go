@@ -44,7 +44,7 @@ func ExampleChunksFrom() {
 
 	// The SCTP payload contains chunks, which we can decode further using the
 	// ChunksFrom function.
-	sctpdefrag.ChunksFrom(chunks)(func(i int, chunk gopacket.Layer) bool {
+	for i, chunk := range sctpdefrag.ChunksFrom(chunks) {
 		// Note that the chunk variable is only valid for the duration of each loop
 		// iteration. That is, by the time this function returns, the chunk variable is
 		// no longer valid.
@@ -52,8 +52,7 @@ func ExampleChunksFrom() {
 		// I currently do not know of a way to copy layers, making it impossible to
 		// collect all the chunks of a packet using ChunksFrom.
 		fmt.Printf("Chunk no.%v: %v\n", i+1, gopacket.LayerString(chunk))
-		return true
-	})
+	}
 
 	// Output:
 	// Decoded layers: [Linux SLL IPv4 SCTP Payload]
@@ -145,6 +144,21 @@ func ExampleDiscardSCTPChunksExcept() {
 // This example demonstrates how ChunksFrom handles decoding failures in SCTP
 // packets: by yielding to the loop one last time with an error layer (of type
 // sctpdefrag.DecodeChunkFailure).
+//
+// It demonstrates two common invalid packets that fail to decode: truncated and
+// unpadded.
+//
+// The chunk types that may require padding are: DATA, INIT, INIT_ACK,
+// COOKIE_ECHO, HEARTBEAT_ACK, and ERROR. This example uses a DATA chunk to show
+// the point.
+//
+// The other chunk types have a fixed size (no variable length fields mean, by
+// definition, no padding), so any missing bytes are necessarily deducted from
+// the chunk itself, not padding.
+//
+// As a reminder, the SCTP specification mandates that all chunks must align to a
+// 4-byte boundary. As such, variable-length chunks must be padded with zeroes to
+// fill up to 3 bytes, while fixed-length chunks already have aligned sizes.
 func ExampleChunksFrom_decodeFailure() {
 	// The opening section is fairly standard, this example focuses on how ChunksFrom
 	// handles decoding failures, so we will skip the introduction and just use the
@@ -160,32 +174,13 @@ func ExampleChunksFrom_decodeFailure() {
 		// BAD chunk: 4 bytes out of 17 (a truncated chunk causes decoding to fail).
 		0x00, 0x03, 0x00, 0x11,
 	}
-
+	fmt.Println("Bad packet payload:")
 	// When ChunksFrom encounters a chunk that it fails to decode, it invokes the
 	// yield callback one last time with a DecodeChunkFailure layer.
-	sctpdefrag.ChunksFrom(badPacketPayload)(func(i int, chunk gopacket.Layer) bool {
+	for i, chunk := range sctpdefrag.ChunksFrom(badPacketPayload) {
 		fmt.Printf("Chunk no.%v: %v\n", i+1, gopacket.LayerString(chunk))
-		return true
-	})
+	}
 
-	// Output:
-	// Chunk no.1: SCTPSack	{Contents=[..16..] Payload=[..28..] Type=Sack Flags=0 Length=16 ActualLength=16 CumulativeTSNAck=66993177 AdvertisedReceiverWindowCredit=48000 NumGapACKs=0 NumDuplicateTSNs=0 GapACKs=[] DuplicateTSNs=[]}
-	// Chunk no.2: SCTPData	{Contents=[..24..] Payload=[0, 3, 0, 17] Type=Data Flags=3 Length=23 ActualLength=24 Unordered=false BeginFragment=true EndFragment=true TSN=3780329790 StreamId=0 StreamSequence=1 PayloadProtocol=S1AP UserData=[..7..]}
-	// Chunk no.3: DecodeFailure	decoding SCTP chunk from bytes: invalid SCTP chunk data: not enough bytes (truncated=true)
-}
-
-// This example demonstrates how ChunksFrom handles SCTP chunks that lack proper
-// padding. Potential chunk types are: DATA, INIT, INIT_ACK, COOKIE_ECHO,
-// HEARTBEAT_ACK, and ERROR. This example uses a DATA chunk to show the point.
-//
-// The other chunk types have a fixed size (no variable length fields mean, by
-// definition, no padding), so any missing bytes are necessarily truncated from
-// the chunk itself.
-//
-// As a reminder, the SCTP specification mandates that all chunks must align to a
-// 4-byte boundary. As such, variable-length chunks must be padded with zeroes to
-// fill up to 3 bytes.
-func ExampleChunksFrom_invalidPadding() {
 	// This packet contains a DATA chunk with 16 bytes of header plus 7 bytes of
 	// payload, totalling 23 bytes. However, SCTP requires all chunks to be padded to
 	// 4-byte boundaries, which means the DATA chunk should be 24 bytes long.
@@ -195,16 +190,17 @@ func ExampleChunksFrom_invalidPadding() {
 		0x20, 0x1e, 0x00, 0x03, 0x00, 0x00, 0x00,
 	}
 	fmt.Printf("DATA chunk size: %d bytes (should be 24 for proper padding)\n", len(unpaddedDataChunk))
-
 	// When ChunksFrom encounters an error, it yields to the loop one last time with
-	// an ErrorLayer. This layer can be identified by its LayerType ==
-	// gopacket.LayerTypeDecodeFailure.
-	sctpdefrag.ChunksFrom(unpaddedDataChunk)(func(i int, chunk gopacket.Layer) bool {
+	// an ErrorLayer, whose LayerType is gopacket.LayerTypeDecodeFailure.
+	for _, chunk := range sctpdefrag.ChunksFrom(unpaddedDataChunk) {
 		fmt.Println(gopacket.LayerDump(chunk))
-		return true
-	})
+	}
 
 	// Output:
+	// Bad packet payload:
+	// Chunk no.1: SCTPSack	{Contents=[..16..] Payload=[..28..] Type=Sack Flags=0 Length=16 ActualLength=16 CumulativeTSNAck=66993177 AdvertisedReceiverWindowCredit=48000 NumGapACKs=0 NumDuplicateTSNs=0 GapACKs=[] DuplicateTSNs=[]}
+	// Chunk no.2: SCTPData	{Contents=[..24..] Payload=[0, 3, 0, 17] Type=Data Flags=3 Length=23 ActualLength=24 Unordered=false BeginFragment=true EndFragment=true TSN=3780329790 StreamId=0 StreamSequence=1 PayloadProtocol=S1AP UserData=[..7..]}
+	// Chunk no.3: DecodeFailure	decoding SCTP chunk from bytes: invalid SCTP chunk data: not enough bytes (truncated=true)
 	// DATA chunk size: 23 bytes (should be 24 for proper padding)
 	// DecodeFailure	decoding SCTP chunk from bytes: invalid SCTP chunk data: not enough padding (truncated=false)
 	// 00000000  00 03 00 17 e1 53 41 3e  00 00 00 01 00 00 00 12  |.....SA>........|
