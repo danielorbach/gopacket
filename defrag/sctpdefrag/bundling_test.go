@@ -197,12 +197,29 @@ func BenchmarkUnbundle(b *testing.B) {
 }
 
 func BenchmarkBundleContainer(b *testing.B) {
-	b.ReportAllocs()
-	for b.Loop() {
-		var bundle BundleContainer
-		err := bundle.DecodeFromBytes(testBundleData, gopacket.NilDecodeFeedback)
-		if err != nil {
-			b.Fatal(err)
+	// ZeroAllocated benches the zero-value BundleContainer, which increases the
+	// capacity of its internal chunk slice to fit the number of chunks in the test
+	// corpus as it encounters larger payloads.
+	b.Run("ZeroAllocated", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			var bundle BundleContainer
+			err := bundle.DecodeFromBytes(testBundleData, gopacket.NilDecodeFeedback)
+			if err != nil {
+				b.Fatal(err)
+			}
 		}
-	}
+	})
+	// PreAllocated benches the pre-allocated BundleContainer, having enough capacity
+	// to fit the number of chunks in the test corpus.
+	b.Run("PreAllocated", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			bundle := NewBundleContainer(16)
+			err := bundle.DecodeFromBytes(testBundleData, gopacket.NilDecodeFeedback)
+			if err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
 }

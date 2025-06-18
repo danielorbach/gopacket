@@ -30,12 +30,27 @@ import (
 //	        // Process data chunk
 //	    }
 //	}
+//
+// For better performance when the maximum chunk count is known, use
+// NewBundleContainer to pre-allocate the internal chunks slice.
 type BundleContainer struct {
 	// Contains the raw byte data of the SCTP payload for processing and decoding.
 	data []byte
 	// Contains the decoded headers of chunks in the SCTP payload. This slice is
 	// reused between calls to DecodeFromBytes for efficiency.
 	chunks []layers.SCTPChunk
+}
+
+// NewBundleContainer creates a BundleContainer with a pre-allocated chunks
+// slice.
+//
+// The capacity parameter specifies the expected maximum number of chunks per
+// payload, reducing allocations when processing multiple packets with similar
+// chunk counts.
+func NewBundleContainer(capacity int) *BundleContainer {
+	return &BundleContainer{
+		chunks: make([]layers.SCTPChunk, 0, capacity),
+	}
 }
 
 // DecodeFromBytes parses an SCTP payload containing bundled chunks. It extracts
