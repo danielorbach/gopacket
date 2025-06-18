@@ -27,6 +27,7 @@ func TestIteratingChunks(t *testing.T) {
 		layers.LayerTypeSCTPShutdown,
 		layers.LayerTypeSCTPShutdownAck,
 		layers.LayerTypeSCTPShutdownComplete,
+		layers.LayerTypeSCTPUnknownChunkType,
 	}
 
 	// We collect all chunks because the decoded chunks should serialise back to the
@@ -86,6 +87,7 @@ func TestBundleContainerDecodesChunks(t *testing.T) {
 		layers.SCTPChunkTypeShutdown,
 		layers.SCTPChunkTypeShutdownAck,
 		layers.SCTPChunkTypeShutdownComplete,
+		layers.SCTPChunkType(0xff),
 	}
 
 	// We collect all chunks because the decoded chunks should serialise back to the
@@ -190,6 +192,8 @@ var testBundleData = []byte{
 	0x08, 0x00, 0x00, 0x04,
 	// SHUTDOWN COMPLETE
 	0x0e, 0x00, 0x00, 0x04,
+	// UNKNOWN CHUNK (type 255)
+	0xff, 0x00, 0x00, 0x10, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f,
 }
 
 func BenchmarkBundleContainer(b *testing.B) {
