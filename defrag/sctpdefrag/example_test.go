@@ -40,6 +40,7 @@ func Example_iteratingBundledChunks() {
 	fmt.Println("Decoded link layer:", gopacket.LayerString(&link))
 	fmt.Println("Decoded network layer:", gopacket.LayerString(&network))
 	fmt.Println("Decoded transport layer:", gopacket.LayerString(&transport))
+	fmt.Println("Decoded SCTP payload:", gopacket.LayerDump(&bundle))
 
 	// Unbundle parses the SCTP packet payload, one chunk at a time, returning the
 	// next decoded layer per iteration. Each chunk is allocated as a new layer
@@ -48,7 +49,7 @@ func Example_iteratingBundledChunks() {
 	//
 	// Use this pattern when simplicity is more important than performance.
 	//
-	fmt.Println("\n=== Pattern 1: Unbundle (allocates per chunk) ===")
+	fmt.Println("=== Pattern 1: Unbundle (allocates per chunk) ===")
 	// The SCTP payload is also accessible by adding a gopacket.Payload layer to the
 	// DecodingLayerParser, or by getting the LayerContents of the BundleContainer.
 	// In this example we just access the payload of the SCTP layer directly.
@@ -69,7 +70,7 @@ func Example_iteratingBundledChunks() {
 	//
 	// This approach is more verbose but provides the best performance for
 	// applications that process many packets rapidly.
-	fmt.Println("\n=== Pattern 2: BundleContainer (reuses layers) ===")
+	fmt.Println("=== Pattern 2: BundleContainer (reuses layers) ===")
 	// Chunks() returns a reused slice that is valid until the next call to
 	// DecodeFromBytes. By the time DecodingLayerParser.DecodeLayers returns with a
 	// nil error, the entire SCTP payload will have been decoded all chunks
@@ -113,11 +114,14 @@ func Example_iteratingBundledChunks() {
 	// Decoded link layer: Linux SLL	{Contents=[..16..] Payload=[..72..] PacketType=outgoing AddrLen=6 Addr=2c:a5:39:00:1f:36 EthernetType=IPv4 AddrType=16}
 	// Decoded network layer: IPv4	{Contents=[..20..] Payload=[..52..] Version=4 IHL=5 TOS=0 Length=72 Id=0 Flags=DF FragOffset=0 TTL=64 Protocol=SCTP Checksum=9546 SrcIP=10.53.0.25 DstIP=10.43.0.112 Options=[] Padding=[]}
 	// Decoded transport layer: SCTP	{Contents=[..12..] Payload=[..40..] SrcPort=36412(s1-control) DstPort=36412(s1-control) VerificationTag=66993176 Checksum=3540262820}
+	// Decoded SCTP payload: BundleContainer	40 byte(s) bundling 2 chunk(s): SACK, DATA
+	// 00000000  03 00 00 10 03 fe 3c 19  00 00 bb 80 00 00 00 00  |......<.........|
+	// 00000010  00 03 00 17 e1 53 41 3e  00 00 00 01 00 00 00 12  |.....SA>........|
+	// 00000020  20 1e 00 03 00 00 00 00                           | .......|
 	//
 	// === Pattern 1: Unbundle (allocates per chunk) ===
 	// Chunk no.1: SCTPSack	{Contents=[..16..] Payload=[..24..] Type=Sack Flags=0 Length=16 ActualLength=16 CumulativeTSNAck=66993177 AdvertisedReceiverWindowCredit=48000 NumGapACKs=0 NumDuplicateTSNs=0 GapACKs=[] DuplicateTSNs=[]}
 	// Chunk no.2: SCTPData	{Contents=[..24..] Payload=[] Type=Data Flags=3 Length=23 ActualLength=24 Unordered=false BeginFragment=true EndFragment=true TSN=3780329790 StreamId=0 StreamSequence=1 PayloadProtocol=S1AP UserData=[..7..]}
-	//
 	// === Pattern 2: BundleContainer (reuses layers) ===
 	// Found 2 chunks: [Sack Data]
 	// Chunk no.1: SCTPChunk	{Contents=[..16..] Payload=[] Type=Sack, Flags=0x00, Length=16, ActualLength=16}
@@ -167,6 +171,9 @@ func ExampleUnbundle_decodeFailure() {
 	// The opening section is fairly standard, this example focuses on how Unbundle
 	// handles decoding failures, so we will skip the introduction and just use the
 	// badPacketPayload as the payload of an SCTP packet.
+
+	fmt.Println("=== Failure 1: Truncated packet ===")
+	// This packet contains a SACK chunk, a DATA chunk, and another partial chunk.
 	var badPacketPayload = []byte{
 		// SACK chunk: 16 bytes.
 		0x03, 0x00, 0x00, 0x10, 0x03, 0xfe, 0x3c, 0x19,
@@ -185,6 +192,7 @@ func ExampleUnbundle_decodeFailure() {
 		fmt.Printf("Chunk no.%v: %v\n", i+1, gopacket.LayerString(chunk))
 	}
 
+	fmt.Println("=== Failure 2: Missing padding ===")
 	// This packet contains a DATA chunk with 16 bytes of header plus 7 bytes of
 	// payload, totalling 23 bytes. However, SCTP requires all chunks to be padded to
 	// 4-byte boundaries, which means the DATA chunk should be 24 bytes long.
@@ -201,10 +209,12 @@ func ExampleUnbundle_decodeFailure() {
 	}
 
 	// Output:
+	// === Failure 1: Truncated packet ===
 	// Bad packet payload:
 	// Chunk no.1: SCTPSack	{Contents=[..16..] Payload=[..28..] Type=Sack Flags=0 Length=16 ActualLength=16 CumulativeTSNAck=66993177 AdvertisedReceiverWindowCredit=48000 NumGapACKs=0 NumDuplicateTSNs=0 GapACKs=[] DuplicateTSNs=[]}
 	// Chunk no.2: SCTPData	{Contents=[..24..] Payload=[0, 3, 0, 17] Type=Data Flags=3 Length=23 ActualLength=24 Unordered=false BeginFragment=true EndFragment=true TSN=3780329790 StreamId=0 StreamSequence=1 PayloadProtocol=S1AP UserData=[..7..]}
 	// Chunk no.3: DecodeFailure	decoding SCTP chunk from bytes: invalid SCTP chunk data: not enough bytes (truncated=true)
+	// === Failure 2: Missing padding ===
 	// DATA chunk size: 23 bytes (should be 24 for proper padding)
 	// DecodeFailure	decoding SCTP chunk from bytes: invalid SCTP chunk data: not enough padding (truncated=false)
 	// 00000000  00 03 00 17 e1 53 41 3e  00 00 00 01 00 00 00 12  |.....SA>........|

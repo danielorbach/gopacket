@@ -2,6 +2,7 @@ package sctpdefrag
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/google/gopacket"
@@ -99,8 +100,8 @@ func (b *BundleContainer) CanDecode() gopacket.LayerClass {
 	return gopacket.LayerTypePayload
 }
 
-// LayerContents returns the raw byte data of the SCTP payload stored in the
-// BundleContainer.
+// LayerContents returns the raw bytes of zero or more SCTP chunks bundled
+// together in a single SCTP payload, decoded into this container.
 func (b *BundleContainer) LayerContents() []byte {
 	return b.data
 }
@@ -120,10 +121,61 @@ func (b *BundleContainer) LayerPayload() []byte {
 	return nil
 }
 
-// LayerType returns gopacket.LayerTypePayload to identify this layer in decoded
+// Payload returns the raw bytes of zero or more SCTP chunks bundled together in
+// a single SCTP payload, decoded into this container.
+func (b *BundleContainer) Payload() []byte {
+	return b.data
+}
+
+// LayerType returns LayerTypeBundleContainer to identify this layer in decoded
 // layer lists as the terminal layer containing the payload of SCTP packets.
 func (b *BundleContainer) LayerType() gopacket.LayerType {
-	return gopacket.LayerTypePayload
+	return LayerTypeBundleContainer
+}
+
+var LayerTypeBundleContainer = gopacket.RegisterApplicationLayerType(gopacket.LayerTypeMetadata{
+	Name: "BundleContainer",
+	Decoder: gopacket.DecodeFunc(func(data []byte, p gopacket.PacketBuilder) error {
+		var bc BundleContainer
+		if err := bc.DecodeFromBytes(data, p); err != nil {
+			return err
+		}
+		p.AddLayer(&bc)
+		p.SetApplicationLayer(&bc)
+		return nil
+	}),
+})
+
+// String implements fmt.Stringer to generate meaningful output when printing
+// this layer with gopacket.LayerString and the likes.
+func (b *BundleContainer) String() string {
+	chunkTypes := make([]string, len(b.chunks))
+	for i, chunk := range b.chunks {
+		if s, ok := chunkTypeNames[chunk.Type]; ok {
+			chunkTypes[i] = s
+		} else {
+			chunkTypes[i] = "UNKNOWN(" + strconv.Itoa(int(chunk.Type)) + ")"
+		}
+	}
+	return fmt.Sprintf("%d byte(s) bundling %d chunk(s): %s", len(b.data), len(b.chunks), strings.Join(chunkTypes, ", "))
+}
+
+// A mapping between well-known chunk types and their IETF spec names, used for
+// pretty-printing.
+var chunkTypeNames = map[layers.SCTPChunkType]string{
+	layers.SCTPChunkTypeData:             "DATA",
+	layers.SCTPChunkTypeInit:             "INIT",
+	layers.SCTPChunkTypeInitAck:          "INIT_ACK",
+	layers.SCTPChunkTypeSack:             "SACK",
+	layers.SCTPChunkTypeHeartbeat:        "HEARTBEAT",
+	layers.SCTPChunkTypeHeartbeatAck:     "HEARTBEAT_ACK",
+	layers.SCTPChunkTypeAbort:            "ABORT",
+	layers.SCTPChunkTypeShutdown:         "SHUTDOWN",
+	layers.SCTPChunkTypeShutdownAck:      "SHUTDOWN_ACK",
+	layers.SCTPChunkTypeError:            "ERROR",
+	layers.SCTPChunkTypeCookieEcho:       "COOKIE_ECHO",
+	layers.SCTPChunkTypeCookieAck:        "COOKIE_ACK",
+	layers.SCTPChunkTypeShutdownComplete: "SHUTDOWN_COMPLETE",
 }
 
 // Chunks returns the slice of common SCTP chunk fields (also known as headers)
