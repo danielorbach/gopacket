@@ -2,6 +2,7 @@ package sctpdefrag
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/layers"
@@ -129,6 +130,30 @@ func (b *BundleContainer) LayerType() gopacket.LayerType {
 //	}
 func (b *BundleContainer) Chunks() []layers.SCTPChunk {
 	return b.chunks
+}
+
+// FormatChunkHeader returns a human-readable representation of the common chunk
+// fields that resembles gopacket's layer strings, though SCTPChunk is not a
+// layer.
+func FormatChunkHeader(s layers.SCTPChunk) string {
+	var b strings.Builder
+	b.WriteString("SCTPChunk\t")
+	b.WriteString("{")
+	b.WriteString("Contents=")
+	if len(s.Contents) > 0 {
+		b.WriteString(fmt.Sprintf("[..%d..] ", len(s.Contents)))
+	} else {
+		b.WriteString("[] ")
+	}
+	b.WriteString("Payload=")
+	if len(s.Payload) > 0 {
+		b.WriteString(fmt.Sprintf("[..%d..] ", len(s.Payload)))
+	} else {
+		b.WriteString("[] ")
+	}
+	b.WriteString(fmt.Sprintf("Type=%s, Flags=0x%02x, Length=%d, ActualLength=%d", s.Type, s.Flags, s.Length, s.ActualLength))
+	b.WriteString("}")
+	return b.String()
 }
 
 func ChunksFrom(payload []byte) func(yield func(i int, chunk gopacket.Layer) bool) {

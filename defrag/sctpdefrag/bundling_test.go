@@ -92,6 +92,7 @@ func TestBundleContainerDecodesChunks(t *testing.T) {
 	// original packet data.
 	var buf bytes.Buffer
 	for i, chunk := range bundle.Chunks() {
+		t.Logf("Chunk #%v: %v", i, FormatChunkHeader(chunk))
 		if i >= len(expected) {
 			t.Errorf("Unexpected chunk #%v = %v", i, chunk.Type)
 			continue

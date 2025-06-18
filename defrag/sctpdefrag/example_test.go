@@ -104,7 +104,7 @@ func Example_iteratingBundledChunks() {
 		default:
 			// For unknown or unhandled chunk types, we already have basic info from
 			// the SCTPChunk.
-			fmt.Printf("Chunk no.%d: %s (length=%d, flags=%#x)\n", i+1, chunk.Type, chunk.Length, chunk.Flags)
+			fmt.Printf("Chunk no.%d: %s\n", i+1, sctpdefrag.FormatChunkHeader(chunk))
 		}
 	}
 
@@ -120,7 +120,7 @@ func Example_iteratingBundledChunks() {
 	//
 	// === Pattern 2: BundleContainer (reuses layers) ===
 	// Found 2 chunks: [Sack Data]
-	// Chunk no.1: Sack (length=16, flags=0x0)
+	// Chunk no.1: SCTPChunk	{Contents=[..16..] Payload=[] Type=Sack, Flags=0x00, Length=16, ActualLength=16}
 	// Chunk no.2: SCTPData	{Contents=[..24..] Payload=[] Type=Data Flags=3 Length=23 ActualLength=24 Unordered=false BeginFragment=true EndFragment=true TSN=3780329790 StreamId=0 StreamSequence=1 PayloadProtocol=S1AP UserData=[..7..]}
 }
 
