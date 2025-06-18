@@ -63,6 +63,37 @@ func RegisterLayerType(num int, meta LayerTypeMetadata) LayerType {
 	return OverrideLayerType(num, meta)
 }
 
+// RegisterApplicationLayerType creates a new layer type and registers it globally.
+// The number for the layer is set to the first available slot in the range 1111-1999,
+// which is very fast (like all other layer types in the gopacket library).
+// If none is available, a runtime panic will occur.
+//
+// This function enables other packages, in this module or external ones, to
+// register application-specific type without conflicts or non-local knowledge to
+// avoid them altogether.
+//
+// A noteworthy side effect of using this function is that the returned index may
+// change depending on the context in which the calling package is used. Callers
+// should take this limitation into consideration when using this function. For
+// example, it may become unfeasible to rely on the layer's number when
+// persisting data.
+//
+// To assist ever so lightly in overcoming this limitation, this function returns
+// the already registered LayerType when called with an already registered layer
+// name (only if it were already registered using this function).
+func RegisterApplicationLayerType(meta LayerTypeMetadata) LayerType {
+	for i := 1111; i < maxLayerType; i++ {
+		// Reuse the number already registered for the same layer.
+		if ltMeta[i].Name == meta.Name {
+			return LayerType(i)
+		}
+		if !ltMeta[i].inUse {
+			return RegisterLayerType(i, meta)
+		}
+	}
+	panic("Could not register application layer type: the space reserved for common application-specific type is full")
+}
+
 // OverrideLayerType acts like RegisterLayerType, except that if the layer type
 // has already been registered, it overrides the metadata with the passed-in
 // metadata intead of panicing.
