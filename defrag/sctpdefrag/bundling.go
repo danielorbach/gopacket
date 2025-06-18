@@ -156,7 +156,7 @@ func FormatChunkHeader(s layers.SCTPChunk) string {
 	return b.String()
 }
 
-func ChunksFrom(payload []byte) func(yield func(i int, chunk gopacket.Layer) bool) {
+func Unbundle(payload []byte) func(yield func(i int, chunk gopacket.Layer) bool) {
 	return func(yield func(i int, chunk gopacket.Layer) bool) {
 		for i := 0; len(payload) != 0; i++ {
 			failure := &DecodeChunkFailure{data: payload}

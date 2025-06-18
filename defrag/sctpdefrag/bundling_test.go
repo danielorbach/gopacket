@@ -33,7 +33,7 @@ func TestIteratingChunks(t *testing.T) {
 	// We collect all chunks because the decoded chunks should serialise back to the
 	// original packet data.
 	var chunks []gopacket.SerializableLayer
-	for i, chunk := range ChunksFrom(testBundleData) {
+	for i, chunk := range Unbundle(testBundleData) {
 		t.Logf("Chunk #%v:\n%v", i, gopacket.LayerDump(chunk))
 		if i >= len(expected) {
 			t.Errorf("Unexpected chunk #%v = %v", i, chunk.LayerType())
@@ -115,16 +115,6 @@ func TestBundleContainerDecodesChunks(t *testing.T) {
 	}
 }
 
-func BenchmarkChunks(b *testing.B) {
-	b.ReportAllocs()
-	for b.Loop() {
-		for range ChunksFrom(testBundleData) {
-			// No need to do anything with the chunks because b.Loop disables all
-			// optimisations inside the loop.
-		}
-	}
-}
-
 // This SCTP packet payload contains a predefined byte sequence used for testing
 // how this package handles a valid bundle of chunks, according to the IETF
 // specification.
@@ -194,6 +184,16 @@ var testBundleData = []byte{
 	0x0e, 0x00, 0x00, 0x04,
 	// UNKNOWN CHUNK (type 255)
 	0xff, 0x00, 0x00, 0x10, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f,
+}
+
+func BenchmarkUnbundle(b *testing.B) {
+	b.ReportAllocs()
+	for b.Loop() {
+		for range Unbundle(testBundleData) {
+			// No need to do anything with the chunks because b.Loop disables all
+			// optimisations inside the loop.
+		}
+	}
 }
 
 func BenchmarkBundleContainer(b *testing.B) {

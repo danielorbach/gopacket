@@ -9,7 +9,7 @@ import (
 )
 
 // Example_iteratingBundledChunks demonstrates two patterns for iterating over
-// bundled SCTP chunks: the simpler ChunksFrom (allocates per chunk) and the more
+// bundled SCTP chunks: the simpler Unbundle (allocates per chunk) and the more
 // efficient BundleContainer (reuses layers).
 func Example_iteratingBundledChunks() {
 	// Performance-oriented parsing requires prior knowledge of the stack's layers.
@@ -41,18 +41,18 @@ func Example_iteratingBundledChunks() {
 	fmt.Println("Decoded network layer:", gopacket.LayerString(&network))
 	fmt.Println("Decoded transport layer:", gopacket.LayerString(&transport))
 
-	// ChunksFrom parses the SCTP packet payload, one chunk at a time, returning the
+	// Unbundle parses the SCTP packet payload, one chunk at a time, returning the
 	// next decoded layer per iteration. Each chunk is allocated as a new layer
 	// object, making it safe for use after the next iteration (or after the loop
 	// altogether) but more memory intensive.
 	//
 	// Use this pattern when simplicity is more important than performance.
 	//
-	fmt.Println("\n=== Pattern 1: ChunksFrom (allocates per chunk) ===")
+	fmt.Println("\n=== Pattern 1: Unbundle (allocates per chunk) ===")
 	// The SCTP payload is also accessible by adding a gopacket.Payload layer to the
 	// DecodingLayerParser, or by getting the LayerContents of the BundleContainer.
 	// In this example we just access the payload of the SCTP layer directly.
-	for i, chunk := range sctpdefrag.ChunksFrom(transport.LayerPayload()) {
+	for i, chunk := range sctpdefrag.Unbundle(transport.LayerPayload()) {
 		fmt.Printf("Chunk no.%d: %s\n", i+1, gopacket.LayerString(chunk))
 	}
 
@@ -114,7 +114,7 @@ func Example_iteratingBundledChunks() {
 	// Decoded network layer: IPv4	{Contents=[..20..] Payload=[..52..] Version=4 IHL=5 TOS=0 Length=72 Id=0 Flags=DF FragOffset=0 TTL=64 Protocol=SCTP Checksum=9546 SrcIP=10.53.0.25 DstIP=10.43.0.112 Options=[] Padding=[]}
 	// Decoded transport layer: SCTP	{Contents=[..12..] Payload=[..40..] SrcPort=36412(s1-control) DstPort=36412(s1-control) VerificationTag=66993176 Checksum=3540262820}
 	//
-	// === Pattern 1: ChunksFrom (allocates per chunk) ===
+	// === Pattern 1: Unbundle (allocates per chunk) ===
 	// Chunk no.1: SCTPSack	{Contents=[..16..] Payload=[..24..] Type=Sack Flags=0 Length=16 ActualLength=16 CumulativeTSNAck=66993177 AdvertisedReceiverWindowCredit=48000 NumGapACKs=0 NumDuplicateTSNs=0 GapACKs=[] DuplicateTSNs=[]}
 	// Chunk no.2: SCTPData	{Contents=[..24..] Payload=[] Type=Data Flags=3 Length=23 ActualLength=24 Unordered=false BeginFragment=true EndFragment=true TSN=3780329790 StreamId=0 StreamSequence=1 PayloadProtocol=S1AP UserData=[..7..]}
 	//
@@ -145,7 +145,7 @@ var ExamplePacketData = []byte{
 	0x20, 0x1e, 0x00, 0x03, 0x00, 0x00, 0x00, 0x00,
 }
 
-// This example demonstrates how ChunksFrom handles decoding failures in SCTP
+// This example demonstrates how Unbundle handles decoding failures in SCTP
 // packets: by yielding to the loop one last time with an error layer (of type
 // sctpdefrag.DecodeChunkFailure).
 //
@@ -163,8 +163,8 @@ var ExamplePacketData = []byte{
 // As a reminder, the SCTP specification mandates that all chunks must align to a
 // 4-byte boundary. As such, variable-length chunks must be padded with zeroes to
 // fill up to 3 bytes, while fixed-length chunks already have aligned sizes.
-func ExampleChunksFrom_decodeFailure() {
-	// The opening section is fairly standard, this example focuses on how ChunksFrom
+func ExampleUnbundle_decodeFailure() {
+	// The opening section is fairly standard, this example focuses on how Unbundle
 	// handles decoding failures, so we will skip the introduction and just use the
 	// badPacketPayload as the payload of an SCTP packet.
 	var badPacketPayload = []byte{
@@ -179,9 +179,9 @@ func ExampleChunksFrom_decodeFailure() {
 		0x00, 0x03, 0x00, 0x11,
 	}
 	fmt.Println("Bad packet payload:")
-	// When ChunksFrom encounters a chunk that it fails to decode, it invokes the
-	// yield callback one last time with a DecodeChunkFailure layer.
-	for i, chunk := range sctpdefrag.ChunksFrom(badPacketPayload) {
+	// When Unbundle encounters a chunk that it fails to decode, it invokes the yield
+	// callback one last time with a DecodeChunkFailure layer.
+	for i, chunk := range sctpdefrag.Unbundle(badPacketPayload) {
 		fmt.Printf("Chunk no.%v: %v\n", i+1, gopacket.LayerString(chunk))
 	}
 
@@ -194,9 +194,9 @@ func ExampleChunksFrom_decodeFailure() {
 		0x20, 0x1e, 0x00, 0x03, 0x00, 0x00, 0x00,
 	}
 	fmt.Printf("DATA chunk size: %d bytes (should be 24 for proper padding)\n", len(unpaddedDataChunk))
-	// When ChunksFrom encounters an error, it yields to the loop one last time with
-	// an ErrorLayer, whose LayerType is gopacket.LayerTypeDecodeFailure.
-	for _, chunk := range sctpdefrag.ChunksFrom(unpaddedDataChunk) {
+	// When Unbundle encounters an error, it yields to the loop one last time with an
+	// ErrorLayer, whose LayerType is gopacket.LayerTypeDecodeFailure.
+	for _, chunk := range sctpdefrag.Unbundle(unpaddedDataChunk) {
 		fmt.Println(gopacket.LayerDump(chunk))
 	}
 
