@@ -63,6 +63,55 @@ func TestIteratingChunks(t *testing.T) {
 	}
 }
 
+func TestBundleContainerDecodesChunks(t *testing.T) {
+	var bundle BundleContainer
+	if err := bundle.DecodeFromBytes(testBundleData, gopacket.NilDecodeFeedback); err != nil {
+		t.Fatalf("DecodeFromBytes() failed: %v", err)
+	}
+
+	// The test collects all chunks successfully parsed chunks that are bundled
+	// together. According to the comments on the testBundleData packet, the chunk
+	// types are as follows:
+	expected := []layers.SCTPChunkType{
+		layers.SCTPChunkTypeInit,
+		layers.SCTPChunkTypeInitAck,
+		layers.SCTPChunkTypeCookieEcho,
+		layers.SCTPChunkTypeData,
+		layers.SCTPChunkTypeCookieAck,
+		layers.SCTPChunkTypeSack,
+		layers.SCTPChunkTypeData,
+		layers.SCTPChunkTypeSack,
+		layers.SCTPChunkTypeHeartbeat,
+		layers.SCTPChunkTypeHeartbeatAck,
+		layers.SCTPChunkTypeShutdown,
+		layers.SCTPChunkTypeShutdownAck,
+		layers.SCTPChunkTypeShutdownComplete,
+	}
+
+	// We collect all chunks because the decoded chunks should serialise back to the
+	// original packet data.
+	var buf bytes.Buffer
+	for i, chunk := range bundle.Chunks() {
+		if i >= len(expected) {
+			t.Errorf("Unexpected chunk #%v = %v", i, chunk.Type)
+			continue
+		}
+		if chunk.Type != expected[i] {
+			t.Errorf("Chunk #%v = %v, want %v", i, chunk.Type, expected[i])
+		}
+
+		// We only collect each chunk's content so we can compare to the input data.
+		buf.Write(chunk.LayerContents())
+	}
+
+	// Once we've collected all chunks as bytes, we may compare with the source bytes
+	// for sanity.
+	if !bytes.Equal(buf.Bytes(), testBundleData) {
+		diff := bytediff.Diff(buf.Bytes(), testBundleData)
+		t.Errorf("Concatenated chunk data differs from input (got->want):\n%v", bytediff.BashOutput.String(diff))
+	}
+}
+
 func BenchmarkChunks(b *testing.B) {
 	b.ReportAllocs()
 	for b.Loop() {
@@ -140,4 +189,15 @@ var testBundleData = []byte{
 	0x08, 0x00, 0x00, 0x04,
 	// SHUTDOWN COMPLETE
 	0x0e, 0x00, 0x00, 0x04,
+}
+
+func BenchmarkBundleContainer(b *testing.B) {
+	b.ReportAllocs()
+	for b.Loop() {
+		var bundle BundleContainer
+		err := bundle.DecodeFromBytes(testBundleData, gopacket.NilDecodeFeedback)
+		if err != nil {
+			b.Fatal(err)
+		}
+	}
 }

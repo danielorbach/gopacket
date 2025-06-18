@@ -8,28 +8,26 @@ import (
 	"github.com/google/gopacket/layers"
 )
 
-func ExampleChunksFrom() {
+// Example_iteratingBundledChunks demonstrates two patterns for iterating over
+// bundled SCTP chunks: the simpler ChunksFrom (allocates per chunk) and the more
+// efficient BundleContainer (reuses layers).
+func Example_iteratingBundledChunks() {
 	// Performance-oriented parsing requires prior knowledge of the stack's layers.
 	parser := gopacket.NewDecodingLayerParser(layers.LayerTypeLinuxSLL)
-	// For this example this is quite easy, we know the entire packet in advance.
-	//
-	// However, users rarely know which SCTP chunks are present in any SCTP packet
-	// because the standard supports bundling of multiple chunks into a single SCTP
-	// packet. This means that an SCTP packet may contain any number of chunks,
-	// allowing for multiple chunks of the same type.
-	//
-	// For this reason, this package provides DecodingLayers that support arbitrary
-	// occurrences of the same chunk type.
+
+	// For this example, we know the packet structure in advance. However, SCTP
+	// supports bundling multiple chunks into a single packet, which means we need
+	// special handling for the SCTP payload.
 	var (
 		link      layers.LinuxSLL
 		network   layers.IPv4
 		transport layers.SCTP
-		chunks    gopacket.Payload
+		bundle    sctpdefrag.BundleContainer
 	)
 	parser.AddDecodingLayer(&link)
 	parser.AddDecodingLayer(&network)
 	parser.AddDecodingLayer(&transport)
-	parser.AddDecodingLayer(&chunks)
+	parser.AddDecodingLayer(&bundle)
 
 	// After registering the layers, we can decode the packet data.
 	var decoded []gopacket.LayerType
@@ -37,21 +35,77 @@ func ExampleChunksFrom() {
 	if err != nil {
 		panic(err)
 	}
+
 	fmt.Println("Decoded layers:", decoded)
 	fmt.Println("Decoded link layer:", gopacket.LayerString(&link))
 	fmt.Println("Decoded network layer:", gopacket.LayerString(&network))
 	fmt.Println("Decoded transport layer:", gopacket.LayerString(&transport))
 
-	// The SCTP payload contains chunks, which we can decode further using the
-	// ChunksFrom function.
-	for i, chunk := range sctpdefrag.ChunksFrom(chunks) {
-		// Note that each chunk variable is valid after the loop iteration completes.
-		// That is, callers may store the layer and reference it even after the entire
-		// for-loop completes.
-		//
-		// This implies that ChunksFrom allocates a new value for every chunk it
-		// encounters.
-		fmt.Printf("Chunk no.%v: %v\n", i+1, gopacket.LayerString(chunk))
+	// ChunksFrom parses the SCTP packet payload, one chunk at a time, returning the
+	// next decoded layer per iteration. Each chunk is allocated as a new layer
+	// object, making it safe for use after the next iteration (or after the loop
+	// altogether) but more memory intensive.
+	//
+	// Use this pattern when simplicity is more important than performance.
+	//
+	fmt.Println("\n=== Pattern 1: ChunksFrom (allocates per chunk) ===")
+	// The SCTP payload is also accessible by adding a gopacket.Payload layer to the
+	// DecodingLayerParser, or by getting the LayerContents of the BundleContainer.
+	// In this example we just access the payload of the SCTP layer directly.
+	for i, chunk := range sctpdefrag.ChunksFrom(transport.LayerPayload()) {
+		fmt.Printf("Chunk no.%d: %s\n", i+1, gopacket.LayerString(chunk))
+	}
+
+	// BundleContainer is a more efficient pattern that reuses layer objects for
+	// parsing SCTP chunks. Instead of allocating new objects for each chunk, it
+	// shifts the responsibility of allocating chunk layers to callers, facilitating
+	// reuse of the same layer type. As a result, it is also more efficient in not
+	// decoding irrelevant chunks.
+	//
+	// The BundleContainer pattern is ideal for high-performance scenarios where memory
+	// allocation needs to be minimised. However, note that the returned chunks slice
+	// is only valid until the next call to DecodeFromBytes, as the underlying memory
+	// will be reused.
+	//
+	// This approach is more verbose but provides the best performance for
+	// applications that process many packets rapidly.
+	fmt.Println("\n=== Pattern 2: BundleContainer (reuses layers) ===")
+	// Chunks() returns a reused slice that is valid until the next call to
+	// DecodeFromBytes. By the time DecodingLayerParser.DecodeLayers returns with a
+	// nil error, the entire SCTP payload will have been decoded all chunks
+	// successfully.
+	chunkTypes := make([]layers.SCTPChunkType, len(bundle.Chunks()))
+	for i, chunk := range bundle.Chunks() {
+		chunkTypes[i] = chunk.Type
+	}
+	fmt.Printf("Found %d chunks: %v\n", len(chunkTypes), chunkTypes)
+
+	// With the BundleContainer we get the change to pre-allocate layers that we'll
+	// reuse for decoding.
+	//
+	// In this example, we're only interested in DATA chunks.
+	var (
+		dataChunk layers.SCTPData
+	)
+	// Then, we iterate through chunks efficiently using the exposed slice.
+	//
+	// For every chunk-type of interest, we know the appropriate layer-type at
+	// coding-time. We then use the pre-allocated layer to DecodeFromBytes for each
+	// SCTP chunk in the bundle.
+	for i, chunk := range bundle.Chunks() {
+		switch chunk.Type {
+		case layers.SCTPChunkTypeData:
+			// Decode the full DATA chunk using the chunk's raw bytes.
+			if err := dataChunk.DecodeFromBytes(chunk.LayerContents(), gopacket.NilDecodeFeedback); err != nil {
+				fmt.Printf("Failed to decode DATA chunk no.%d: %v\n", i+1, err)
+				continue
+			}
+			fmt.Printf("Chunk no.%d: %s\n", i+1, gopacket.LayerString(&dataChunk))
+		default:
+			// For unknown or unhandled chunk types, we already have basic info from
+			// the SCTPChunk.
+			fmt.Printf("Chunk no.%d: %s (length=%d, flags=%#x)\n", i+1, chunk.Type, chunk.Length, chunk.Flags)
+		}
 	}
 
 	// Output:
@@ -59,7 +113,14 @@ func ExampleChunksFrom() {
 	// Decoded link layer: Linux SLL	{Contents=[..16..] Payload=[..72..] PacketType=outgoing AddrLen=6 Addr=2c:a5:39:00:1f:36 EthernetType=IPv4 AddrType=16}
 	// Decoded network layer: IPv4	{Contents=[..20..] Payload=[..52..] Version=4 IHL=5 TOS=0 Length=72 Id=0 Flags=DF FragOffset=0 TTL=64 Protocol=SCTP Checksum=9546 SrcIP=10.53.0.25 DstIP=10.43.0.112 Options=[] Padding=[]}
 	// Decoded transport layer: SCTP	{Contents=[..12..] Payload=[..40..] SrcPort=36412(s1-control) DstPort=36412(s1-control) VerificationTag=66993176 Checksum=3540262820}
+	//
+	// === Pattern 1: ChunksFrom (allocates per chunk) ===
 	// Chunk no.1: SCTPSack	{Contents=[..16..] Payload=[..24..] Type=Sack Flags=0 Length=16 ActualLength=16 CumulativeTSNAck=66993177 AdvertisedReceiverWindowCredit=48000 NumGapACKs=0 NumDuplicateTSNs=0 GapACKs=[] DuplicateTSNs=[]}
+	// Chunk no.2: SCTPData	{Contents=[..24..] Payload=[] Type=Data Flags=3 Length=23 ActualLength=24 Unordered=false BeginFragment=true EndFragment=true TSN=3780329790 StreamId=0 StreamSequence=1 PayloadProtocol=S1AP UserData=[..7..]}
+	//
+	// === Pattern 2: BundleContainer (reuses layers) ===
+	// Found 2 chunks: [Sack Data]
+	// Chunk no.1: Sack (length=16, flags=0x0)
 	// Chunk no.2: SCTPData	{Contents=[..24..] Payload=[] Type=Data Flags=3 Length=23 ActualLength=24 Unordered=false BeginFragment=true EndFragment=true TSN=3780329790 StreamId=0 StreamSequence=1 PayloadProtocol=S1AP UserData=[..7..]}
 }
 
