@@ -197,12 +197,28 @@ func BenchmarkUnbundle(b *testing.B) {
 }
 
 func BenchmarkBundleContainer(b *testing.B) {
-	b.ReportAllocs()
-	for b.Loop() {
-		var bundle BundleContainer
-		err := bundle.DecodeFromBytes(testBundleData, gopacket.NilDecodeFeedback)
-		if err != nil {
-			b.Fatal(err)
+	// Dynamic benches the zero-value BundleContainer, increasing the capacity of its
+	// internal chunk slice to fit the number of chunks in the test corpus.
+	b.Run("Dynamic", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			var bundle BundleContainer
+			err := bundle.DecodeFromBytes(testBundleData, gopacket.NilDecodeFeedback)
+			if err != nil {
+				b.Fatal(err)
+			}
 		}
-	}
+	})
+	// Constant benches the pre-allocated BundleContainer, having enough capacity to
+	// fit the number of chunks in the test corpus.
+	b.Run("Constant", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			bundle := NewBundleContainer(16)
+			err := bundle.DecodeFromBytes(testBundleData, gopacket.NilDecodeFeedback)
+			if err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
 }
