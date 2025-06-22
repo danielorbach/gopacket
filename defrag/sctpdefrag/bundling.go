@@ -100,12 +100,6 @@ func (b *BundleContainer) CanDecode() gopacket.LayerClass {
 	return gopacket.LayerTypePayload
 }
 
-// LayerContents returns the raw bytes of zero or more SCTP chunks bundled
-// together in a single SCTP payload, decoded into this container.
-func (b *BundleContainer) LayerContents() []byte {
-	return b.data
-}
-
 // NextLayerType returns gopacket.LayerTypeZero as BundleContainer is a terminal
 // layer that does not lead to additional layers.
 func (b *BundleContainer) NextLayerType() gopacket.LayerType {
@@ -121,34 +115,15 @@ func (b *BundleContainer) LayerPayload() []byte {
 	return nil
 }
 
-// Payload returns the raw bytes of zero or more SCTP chunks bundled together in
-// a single SCTP payload, decoded into this container.
-func (b *BundleContainer) Payload() []byte {
+// Bytes returns the raw bytes of zero or more SCTP chunks bundled together in a
+// single SCTP payload, decoded into this container.
+func (b *BundleContainer) Bytes() []byte {
 	return b.data
 }
 
-// LayerType returns LayerTypeBundleContainer to identify this layer in decoded
-// layer lists as the terminal layer containing the payload of SCTP packets.
-func (b *BundleContainer) LayerType() gopacket.LayerType {
-	return LayerTypeBundleContainer
-}
-
-var LayerTypeBundleContainer = gopacket.RegisterApplicationLayerType(gopacket.LayerTypeMetadata{
-	Name: "BundleContainer",
-	Decoder: gopacket.DecodeFunc(func(data []byte, p gopacket.PacketBuilder) error {
-		var bc BundleContainer
-		if err := bc.DecodeFromBytes(data, p); err != nil {
-			return err
-		}
-		p.AddLayer(&bc)
-		p.SetApplicationLayer(&bc)
-		return nil
-	}),
-})
-
 // String implements fmt.Stringer to generate meaningful output when printing
 // this layer with gopacket.LayerString and the likes.
-func (b *BundleContainer) String() string {
+func (b BundleContainer) String() string {
 	chunkTypes := make([]string, len(b.chunks))
 	for i, chunk := range b.chunks {
 		if s, ok := chunkTypeNames[chunk.Type]; ok {

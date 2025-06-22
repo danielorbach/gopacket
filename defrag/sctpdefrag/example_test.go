@@ -1,6 +1,7 @@
 package sctpdefrag_test
 
 import (
+	"encoding/hex"
 	"fmt"
 
 	"github.com/google/gopacket"
@@ -40,7 +41,8 @@ func Example_iteratingBundledChunks() {
 	fmt.Println("Decoded link layer:", gopacket.LayerString(&link))
 	fmt.Println("Decoded network layer:", gopacket.LayerString(&network))
 	fmt.Println("Decoded transport layer:", gopacket.LayerString(&transport))
-	fmt.Println("Decoded SCTP payload:", gopacket.LayerDump(&bundle))
+	fmt.Println("Decoded SCTP payload:", bundle)
+	fmt.Println(hex.Dump(bundle.Bytes()))
 
 	// Unbundle parses the SCTP packet payload, one chunk at a time, returning the
 	// next decoded layer per iteration. Each chunk is allocated as a new layer
@@ -114,7 +116,7 @@ func Example_iteratingBundledChunks() {
 	// Decoded link layer: Linux SLL	{Contents=[..16..] Payload=[..72..] PacketType=outgoing AddrLen=6 Addr=2c:a5:39:00:1f:36 EthernetType=IPv4 AddrType=16}
 	// Decoded network layer: IPv4	{Contents=[..20..] Payload=[..52..] Version=4 IHL=5 TOS=0 Length=72 Id=0 Flags=DF FragOffset=0 TTL=64 Protocol=SCTP Checksum=9546 SrcIP=10.53.0.25 DstIP=10.43.0.112 Options=[] Padding=[]}
 	// Decoded transport layer: SCTP	{Contents=[..12..] Payload=[..40..] SrcPort=36412(s1-control) DstPort=36412(s1-control) VerificationTag=66993176 Checksum=3540262820}
-	// Decoded SCTP payload: BundleContainer	40 byte(s) bundling 2 chunk(s): SACK, DATA
+	// Decoded SCTP payload: 40 byte(s) bundling 2 chunk(s): SACK, DATA
 	// 00000000  03 00 00 10 03 fe 3c 19  00 00 bb 80 00 00 00 00  |......<.........|
 	// 00000010  00 03 00 17 e1 53 41 3e  00 00 00 01 00 00 00 12  |.....SA>........|
 	// 00000020  20 1e 00 03 00 00 00 00                           | .......|
