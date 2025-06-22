@@ -3,6 +3,7 @@ package sctpdefrag_test
 import (
 	"bytes"
 	_ "embed"
+	"io"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
@@ -14,7 +15,7 @@ import (
 	"github.com/google/gopacket/pcapgo"
 )
 
-func TestDefragmentation(t *testing.T) {
+func TestDecoderDefragmentation(t *testing.T) {
 	// This test relies on a curated PCAP of a single S1AP payload
 	// (defragmentedMessage) fragmented over several SCTP frames (fragmentedPCAP).
 	dataSource, err := pcapgo.NewNgReader(bytes.NewReader(fragmentedPCAP), pcapgo.DefaultNgReaderOptions)
@@ -34,7 +35,87 @@ func TestDefragmentation(t *testing.T) {
 		reassembled, err = defrag.DefragData(chunk)
 		if err != nil {
 			t.Logf("Decoded chunk = %v", gopacket.LayerString(chunk))
-			t.Errorf("DefragData(TSN=%v): %v", chunk.TSN, err)
+			t.Errorf("DefragData(TSN=%v) error = %v", chunk.TSN, err)
+		}
+	}
+	if reassembled == nil {
+		t.Fatalf("Defragmenter did not reassemble the message")
+	}
+
+	// We check that the reassembled message is as expected.
+	if !bytes.Equal(reassembled.Payload(), defragmentedMessage) {
+		diff := bytediff.Diff(reassembled.Payload(), defragmentedMessage)
+		t.Errorf("Reassembly produced the wrong message (BASH-colorized diff, got->want):\n%v\n---PACKET (reassembled)---\n%v", bytediff.BashOutput.String(diff), gopacket.LayerDump(reassembled))
+	}
+
+	// And that the synthetic layer is a valid SCTP DATA chunk that can be serialised
+	// correctly. We achieve that by serialising the synthetic layer, then decoding a
+	// DATA chunk back from the serialised buffer.
+	buf := gopacket.NewSerializeBuffer()
+	opts := gopacket.SerializeOptions{FixLengths: true, ComputeChecksums: true}
+	if err := gopacket.SerializeLayers(buf, opts, reassembled); err != nil {
+		t.Fatalf("SerializeLayers(SCTPData) = %v", err)
+	}
+	sanity := new(layers.SCTPData)
+	if err := sanity.DecodeFromBytes(buf.Bytes(), gopacket.NilDecodeFeedback); err != nil {
+		t.Fatalf("DecodeFromBytes(SCTPData) = %v", err)
+	}
+	var cmpOpts = []cmp.Option{
+		cmpopts.EquateEmpty(), // A nil Payload (<nil>) equals a zero-length Payload ([]byte{}).
+	}
+	if diff := cmp.Diff(reassembled, sanity, cmpOpts...); diff != "" {
+		t.Errorf("Reassembled DATA chunk did not serialize->deserialize correctly (-want +got):\n%v", diff)
+	}
+}
+
+func TestDecodingLayerDefragmentation(t *testing.T) {
+	// This test relies on a curated PCAP of a single S1AP payload
+	// (defragmentedMessage) fragmented over several SCTP frames (fragmentedPCAP).
+	dataSource, err := pcapgo.NewNgReader(bytes.NewReader(fragmentedPCAP), pcapgo.DefaultNgReaderOptions)
+	if err != nil {
+		t.Fatalf("Failed to open fragmented PCAP: %v", err)
+	}
+
+	parser := gopacket.NewDecodingLayerParser(layers.LayerTypeEthernet)
+	parser.AddDecodingLayer(&layers.Ethernet{})
+	parser.AddDecodingLayer(&layers.IPv4{})
+	parser.AddDecodingLayer(&layers.SCTP{})
+	var payload sctpdefrag.BundleContainer
+	parser.AddDecodingLayer(&payload)
+
+	// Defragmentation is as easy as iterating over the packets in the source and
+	// calling DefragData on each one.
+	var reassembled *layers.SCTPData
+	defrag := sctpdefrag.NewDefragmenter()
+	for {
+		packetData, _, err := dataSource.ReadPacketData()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("ReadPacketData() error = %v", err)
+		}
+
+		var decoded []gopacket.LayerType
+		if err := parser.DecodeLayers(packetData, &decoded); err != nil {
+			t.Fatalf("DecodeLayers() error = %v", err)
+		}
+		if decoded[len(decoded)-1] != gopacket.LayerTypePayload {
+			t.Fatalf("DecodeLayers() decoded = %v, want BundleContainer", decoded)
+		}
+
+		// We are only interested in DATA chunks at this test.
+		for _, c := range payload.ChunksOf(layers.SCTPChunkTypeData) {
+			var chunk layers.SCTPData
+			if err := chunk.DecodeFromBytes(c.LayerContents(), gopacket.NilDecodeFeedback); err != nil {
+				t.Fatalf("SCTPData.DecodeFromBytes(): %v", err)
+			}
+
+			reassembled, err = defrag.DefragData(&chunk)
+			if err != nil {
+				t.Logf("Decoded chunk = %v", gopacket.LayerString(&chunk))
+				t.Errorf("DefragData(TSN=%v): %v", chunk.TSN, err)
+			}
 		}
 	}
 	if reassembled == nil {
