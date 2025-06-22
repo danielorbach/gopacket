@@ -2,6 +2,7 @@ package sctpdefrag
 
 import (
 	"fmt"
+	"iter"
 	"strconv"
 	"strings"
 
@@ -172,6 +173,24 @@ var chunkTypeNames = map[layers.SCTPChunkType]string{
 //	}
 func (b *BundleContainer) Chunks() []layers.SCTPChunk {
 	return b.chunks
+}
+
+// ChunksOf returns an iterator over chunks matching the specified type. The
+// iterator yields only chunks whose Type field equals chunkType.
+//
+// The iterator is valid only until the next call to DecodeFromBytes. The chunks
+// yielded by the iterator reference the same underlying data as returned by
+// Chunks() and have the same lifetime constraints.
+func (b *BundleContainer) ChunksOf(chunkType layers.SCTPChunkType) iter.Seq2[int, layers.SCTPChunk] {
+	return func(yield func(int, layers.SCTPChunk) bool) {
+		for i, chunk := range b.chunks {
+			if chunk.Type == chunkType {
+				if !yield(i, chunk) {
+					return
+				}
+			}
+		}
+	}
 }
 
 // FormatChunkHeader returns a human-readable representation of the common chunk

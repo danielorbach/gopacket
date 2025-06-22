@@ -196,6 +196,48 @@ func BenchmarkUnbundle(b *testing.B) {
 	}
 }
 
+func TestBundleContainerChunksOf(t *testing.T) {
+	// Map of chunk types to their expected counts in testBundleData
+	tests := []struct {
+		chunkType layers.SCTPChunkType
+		count     int
+	}{
+		{chunkType: layers.SCTPChunkTypeData, count: 2},
+		{chunkType: layers.SCTPChunkTypeInit, count: 1},
+		{chunkType: layers.SCTPChunkTypeInitAck, count: 1},
+		{chunkType: layers.SCTPChunkTypeSack, count: 2},
+		{chunkType: layers.SCTPChunkTypeHeartbeat, count: 1},
+		{chunkType: layers.SCTPChunkTypeHeartbeatAck, count: 1},
+		{chunkType: layers.SCTPChunkTypeAbort, count: 0},
+		{chunkType: layers.SCTPChunkTypeShutdown, count: 1},
+		{chunkType: layers.SCTPChunkTypeShutdownAck, count: 1},
+		{chunkType: layers.SCTPChunkTypeError, count: 0},
+		{chunkType: layers.SCTPChunkTypeCookieEcho, count: 1},
+		{chunkType: layers.SCTPChunkTypeCookieAck, count: 1},
+		{chunkType: layers.SCTPChunkTypeShutdownComplete, count: 1},
+		{chunkType: layers.SCTPChunkType(0xff), count: 1}, // Unknown chunk type
+		{chunkType: layers.SCTPChunkType(0x42), count: 0}, // Non-existent type
+	}
+
+	var bundle BundleContainer
+	if err := bundle.DecodeFromBytes(testBundleData, gopacket.NilDecodeFeedback); err != nil {
+		t.Fatalf("DecodeFromBytes() failed: %v", err)
+	}
+
+	for _, tt := range tests {
+		var count int
+		for _, chunk := range bundle.ChunksOf(tt.chunkType) {
+			count++
+			if chunk.Type != tt.chunkType {
+				t.Errorf("ChunksOf(%v) yielded %v chunk", tt.chunkType, chunk.Type)
+			}
+		}
+		if count != tt.count {
+			t.Errorf("ChunksOf(%v) = %v chunks, want %v", tt.chunkType, count, tt.count)
+		}
+	}
+}
+
 func BenchmarkBundleContainer(b *testing.B) {
 	// ZeroAllocated benches the zero-value BundleContainer, which increases the
 	// capacity of its internal chunk slice to fit the number of chunks in the test
