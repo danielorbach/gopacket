@@ -39,7 +39,7 @@ func NewDefragmenter() *Defragmenter {
 	}
 }
 
-// DefragData takes in a DATA chunk with a possibly fragmented payload, and
+// DefragData takes in a DATA chunk with a possibly fragmented payload and
 // returns either:
 //
 //   - a ready-to-be-used [layers.SCTPData] layer, if the chunk is fully
@@ -69,7 +69,7 @@ func NewDefragmenter() *Defragmenter {
 //
 // Processing chunks in any order is useful when the observed traffic contains
 // retransmissions (e.g. due to selective acknowledgements with gaps).
-func (d *Defragmenter) DefragData(data *layers.SCTPData) (complete *layers.SCTPData, err error) {
+func (d *Defragmenter) DefragData(assoc Association, data *layers.SCTPData) (complete *layers.SCTPData, err error) {
 	// Immediately return if the chunk is invalid for defragmentation.
 	if err := checkDataChunk(data); err != nil {
 		return nil, fmt.Errorf("invalid chunk: %w", err)
@@ -80,7 +80,7 @@ func (d *Defragmenter) DefragData(data *layers.SCTPData) (complete *layers.SCTPD
 		return data, nil
 	}
 
-	key := messageKeyOf(data)
+	key := messageKeyOf(assoc, data)
 
 	// All messages begin with the first fragment.
 	if data.BeginFragment {
@@ -140,7 +140,11 @@ func checkDataChunk(data *layers.SCTPData) error {
 	return nil
 }
 
+// A messageKey uniquely identifies a fragmented message within an SCTP
+// association.
 type messageKey struct {
+	// Identifies the SCTP association this message belongs to.
+	Association
 	// A Stream Identifier contains an ordered sequence of messages.
 	SID uint16
 	// A Stream Sequence Number is a monotonically increasing counter used to
@@ -153,8 +157,50 @@ func (m messageKey) String() string {
 }
 
 // MakeMessageKey creates a unique key for a stream ID and sequence number
-func messageKeyOf(data *layers.SCTPData) messageKey {
-	return messageKey{SID: data.StreamId, SSN: data.StreamSequence}
+func messageKeyOf(assoc Association, data *layers.SCTPData) messageKey {
+	return messageKey{Association: assoc, SID: data.StreamId, SSN: data.StreamSequence}
+}
+
+// Association represents an SCTP association between two peers. It uniquely
+// identifies a unidirectional communication channel between two participants.
+//
+// In SCTP (RFC 4960), an association is established between two peers and is
+// defined by their transport endpoints (IP addresses and ports) and verification
+// tags. While SCTP supports multi-homed peers (i.e. peers with multiple IP
+// addresses), this implementation only supports single-endpoint peers. At any
+// given time, there can only be one association in each direction between two
+// peers. However, sequential associations can exist between the same peers over
+// time, distinguished by their verification tags. This allows SCTP to handle
+// association restarts, where a new association replaces an old one.
+//
+// The verification tag serves as an association identifier that remains constant
+// for the life of the association. When a peer receives an SCTP packet, it uses
+// the verification tag to determine which association the packet belongs to,
+// preventing packets from old associations from being accepted by new ones.
+type Association struct {
+	// Addresses contain the source and destination IP addresses of the two SCTP
+	// peers. In full SCTP, each peer could have multiple endpoints (addresses), but
+	// this implementation tracks only a single endpoint per peer.
+	Addresses gopacket.Flow
+	// The source and destination SCTP ports used by the peers for this association.
+	Ports gopacket.Flow
+	// Like a session identifier, this tag is used to validate that packets belong to
+	// this specific association instance, distinguishing it from any previous or
+	// future associations between the same peers.
+	VerificationTag uint32
+}
+
+// NewAssociation extracts the association identifier from the packet's network
+// and SCTP layers.
+//
+// The Association uniquely identifies the unidirectional SCTP communication
+// channel for all chunks carried by this packet.
+func NewAssociation(ip gopacket.NetworkLayer, sctp *layers.SCTP) Association {
+	return Association{
+		Addresses:       ip.NetworkFlow(),
+		Ports:           sctp.TransportFlow(),
+		VerificationTag: sctp.VerificationTag,
+	}
 }
 
 // A messageContext tracks the fragments of a specific message in a stream.
@@ -201,6 +247,9 @@ type messageContext struct {
 func beginMessageReassembly(data *layers.SCTPData) *messageContext {
 	// We've never seen a message fragmented over more than 3 SCTP packets, yet 4
 	// seems like a rounder number.
+	//
+	// DATA chunks with the complete message don't arrive at this function, so we
+	// don't need to optimise for the most common case of non-fragmented messages.
 	const commonFragmentation = 4
 	m := &messageContext{
 		Unordered:       data.Unordered,

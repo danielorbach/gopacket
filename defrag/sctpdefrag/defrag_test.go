@@ -31,8 +31,11 @@ func TestDecoderDefragmentation(t *testing.T) {
 	var reassembled *layers.SCTPData
 	defrag := sctpdefrag.NewDefragmenter()
 	for p := range source.Packets() {
+		// We safely type-assert here because we know the content of the PCAP in advance.
+		// Any panics indicate the PCAP has changed while the test did not.
+		assoc := sctpdefrag.NewAssociation(p.NetworkLayer(), p.TransportLayer().(*layers.SCTP))
 		chunk := p.Layer(layers.LayerTypeSCTPData).(*layers.SCTPData)
-		reassembled, err = defrag.DefragData(chunk)
+		reassembled, err = defrag.DefragData(assoc, chunk)
 		if err != nil {
 			t.Logf("Decoded chunk = %v", gopacket.LayerString(chunk))
 			t.Errorf("DefragData(TSN=%v) error = %v", chunk.TSN, err)
@@ -78,8 +81,10 @@ func TestDecodingLayerDefragmentation(t *testing.T) {
 
 	parser := gopacket.NewDecodingLayerParser(layers.LayerTypeEthernet)
 	parser.AddDecodingLayer(&layers.Ethernet{})
-	parser.AddDecodingLayer(&layers.IPv4{})
-	parser.AddDecodingLayer(&layers.SCTP{})
+	var ip layers.IPv4
+	parser.AddDecodingLayer(&ip)
+	var sctp layers.SCTP
+	parser.AddDecodingLayer(&sctp)
 	var payload sctpdefrag.BundleContainer
 	parser.AddDecodingLayer(&payload)
 
@@ -104,6 +109,7 @@ func TestDecodingLayerDefragmentation(t *testing.T) {
 			t.Fatalf("DecodeLayers() decoded = %v, want BundleContainer", decoded)
 		}
 
+		assoc := sctpdefrag.NewAssociation(&ip, &sctp)
 		// We are only interested in DATA chunks at this test.
 		for _, c := range payload.ChunksOf(layers.SCTPChunkTypeData) {
 			var chunk layers.SCTPData
@@ -111,7 +117,7 @@ func TestDecodingLayerDefragmentation(t *testing.T) {
 				t.Fatalf("SCTPData.DecodeFromBytes(): %v", err)
 			}
 
-			reassembled, err = defrag.DefragData(&chunk)
+			reassembled, err = defrag.DefragData(assoc, &chunk)
 			if err != nil {
 				t.Logf("Decoded chunk = %v", gopacket.LayerString(&chunk))
 				t.Errorf("DefragData(TSN=%v): %v", chunk.TSN, err)
