@@ -64,7 +64,8 @@ func TestDecoderDefragmentation(t *testing.T) {
 		t.Fatalf("DecodeFromBytes(SCTPData) = %v", err)
 	}
 	var cmpOpts = []cmp.Option{
-		cmpopts.EquateEmpty(), // A nil Payload (<nil>) equals a zero-length Payload ([]byte{}).
+		// Ignore BaseLayer, which is not part of the synthesized SCTPData layer.
+		cmpopts.IgnoreTypes(layers.BaseLayer{}),
 	}
 	if diff := cmp.Diff(reassembled, sanity, cmpOpts...); diff != "" {
 		t.Errorf("Reassembled DATA chunk did not serialize->deserialize correctly (-want +got):\n%v", diff)
@@ -147,7 +148,8 @@ func TestDecodingLayerDefragmentation(t *testing.T) {
 		t.Fatalf("DecodeFromBytes(SCTPData) = %v", err)
 	}
 	var cmpOpts = []cmp.Option{
-		cmpopts.EquateEmpty(), // A nil Payload (<nil>) equals a zero-length Payload ([]byte{}).
+		// Ignore BaseLayer, which is not part of the synthesized SCTPData layer.
+		cmpopts.IgnoreTypes(layers.BaseLayer{}),
 	}
 	if diff := cmp.Diff(reassembled, sanity, cmpOpts...); diff != "" {
 		t.Errorf("Reassembled DATA chunk did not serialize->deserialize correctly (-want +got):\n%v", diff)

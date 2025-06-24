@@ -334,12 +334,12 @@ func (m *messageContext) reassemble() (*layers.SCTPData, error) {
 	// Finally, we can create a synthetic chunk with the reassembled User Data payload.
 	return &layers.SCTPData{
 		SCTPChunk: layers.SCTPChunk{
-			BaseLayer: layers.BaseLayer{
-				Contents: content,
-				Payload:  nil, // A DATA chunk's UserData is part of its content.
-			},
-			Type:  layers.SCTPChunkTypeData,
-			Flags: flags,
+			// Like most constructed layers, the BaseLayer is empty. This field is populated
+			// when decoding a layer. It does not interfere with the serialisation of the
+			// layer, as the SerializeTo method traditionally ignores the BaseLayer field.
+			BaseLayer: layers.BaseLayer{},
+			Type:      layers.SCTPChunkTypeData,
+			Flags:     flags,
 			// This field indicates the length of the DATA chunk in bytes from the beginning
 			// of the type field to the end of the UserData field, excluding any padding.
 			Length:       uint16(16 + len(userData)),
