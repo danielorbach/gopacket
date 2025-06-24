@@ -1,7 +1,6 @@
 package sctpdefrag
 
 import (
-	"encoding/binary"
 	"errors"
 	"fmt"
 	"math"
@@ -26,11 +25,11 @@ type Defragmenter struct {
 
 // TODO: document package.
 
+// TODO: purge the reassembly map of contexts that are no longer needed (by association).
+
 // TODO: expose statistics (processed chunks, reassembled chunks, invalid chunks, invalid internal states, etc).
 
 // TODO: optimise with memory pool because all non-last fragments are the same size (controlled by the PMTU).
-
-// TODO: support message fragments out of order (e.g. [1,3,2] or [3,2,1]).
 
 // NewDefragmenter creates a new SCTP DATA chunk defragmenter.
 func NewDefragmenter() *Defragmenter {
@@ -70,6 +69,8 @@ func NewDefragmenter() *Defragmenter {
 // Processing chunks in any order is useful when the observed traffic contains
 // retransmissions (e.g. due to selective acknowledgements with gaps).
 func (d *Defragmenter) DefragData(assoc Association, data *layers.SCTPData) (complete *layers.SCTPData, err error) {
+	key := messageKeyOf(assoc, data)
+
 	// Immediately return if the chunk is invalid for defragmentation.
 	if err := checkDataChunk(data); err != nil {
 		return nil, fmt.Errorf("invalid chunk: %w", err)
@@ -80,39 +81,39 @@ func (d *Defragmenter) DefragData(assoc Association, data *layers.SCTPData) (com
 		return data, nil
 	}
 
-	key := messageKeyOf(assoc, data)
+	// The first packet we encounter for a specific sequence, of a specific stream,
+	// in a specific association, isn't necessarily the first fragment of the
+	// message.
+	context, ok := d.reassembly[key]
+	if !ok {
+		// Note that beginMessageReassembly does not Push the data chunk into the
+		// messageContext.
+		context = beginMessageReassembly(data)
+		d.reassembly[key] = context
+	}
 
-	// All messages begin with the first fragment.
-	if data.BeginFragment {
-		if _, ok := d.reassembly[key]; ok {
-			// We already have this message pending, so we don't need to do anything.
-			return nil, fmt.Errorf("message already pending: %v", key)
-		}
-		d.reassembly[key] = beginMessageReassembly(data)
+	more, err := context.Push(data)
+	if err != nil {
+		return nil, fmt.Errorf("push fragment: %w", err)
+	}
+	if more {
+		// If we get here, the message is still incomplete and waiting for more
+		// fragments, so we return nil.
 		return nil, nil
 	}
 
-	// By this point in the code, we know that the message is fragmented, and we
-	// expect to have already processed its first fragment.
-	reassembly, ok := d.reassembly[key]
-	if !ok {
-		return nil, fmt.Errorf("no pending message: %v", key)
-	}
-
-	// All messages end with the last fragment.
-	if data.EndFragment {
-		reassembly.append(data)
-		reassembled, err := reassembly.reassemble()
-		if err != nil {
-			return nil, fmt.Errorf("reassemble: %w", err)
-		}
+	// If we get here, the message appears to be complete, so we attempt to
+	// reassemble it. If it is not indeed complete, the reassembly will fail now and
+	// continue to fail indefinitely for this context.
+	reassembled, err := context.Reassemble()
+	if err != nil {
+		// Delete the context from the reassembly map, as it will remain in an invalid
+		// state even after future fragments are processed.
 		delete(d.reassembly, key)
-		return reassembled, nil
+		return nil, fmt.Errorf("reassemble: %w", err)
 	}
-
-	// If we get here, we have a fragment that is neither the first nor the last.
-	reassembly.append(data)
-	return nil, nil
+	delete(d.reassembly, key)
+	return reassembled, nil
 }
 
 func checkDataChunk(data *layers.SCTPData) error {
@@ -153,7 +154,7 @@ type messageKey struct {
 }
 
 func (m messageKey) String() string {
-	return fmt.Sprintf("SID=%v, SSN=%v", m.SID, m.SSN)
+	return fmt.Sprintf("ASSOC={%v} SID=%v, SSN=%v", m.Association, m.SID, m.SSN)
 }
 
 // MakeMessageKey creates a unique key for a stream ID and sequence number
@@ -203,6 +204,10 @@ func NewAssociation(ip gopacket.NetworkLayer, sctp *layers.SCTP) Association {
 	}
 }
 
+func (a Association) String() string {
+	return fmt.Sprintf("Peers=%v:%v->%v:%v TAG=%v", a.Addresses.Src(), a.Ports.Src(), a.Addresses.Dst(), a.Ports.Dst(), a.VerificationTag)
+}
+
 // A messageContext tracks the fragments of a specific message in a stream.
 //
 // The term "stream" is used in SCTP to refer to a sequence of user messages that
@@ -234,16 +239,16 @@ type messageContext struct {
 	// available for agents in the middle of the network).
 	PayloadProtocol layers.SCTPPayloadProtocol
 
-	// Fragments is a collection of fragments representing all tracked portions of a
-	// user message within a stream
-	fragments []fragment
+	// A collection of fragments representing all tracked portions of a user message
+	// within a stream.
+	Fragments fragmentList
 }
 
 // BeginMessageReassembly initialises a message reassembly context for a new
 // message.
 //
-// It should be called once, with the first fragment of the message. The first
-// fragment is identified by the [layers.SCTPData.BeginFragment] flag.
+// It should be called once, not necessarily with the first fragment of the
+// message (identified by the [layers.SCTPData.BeginFragment] flag).
 func beginMessageReassembly(data *layers.SCTPData) *messageContext {
 	// We've never seen a message fragmented over more than 3 SCTP packets, yet 4
 	// seems like a rounder number.
@@ -256,67 +261,81 @@ func beginMessageReassembly(data *layers.SCTPData) *messageContext {
 		StreamId:        data.StreamId,
 		StreamSequence:  data.StreamSequence,
 		PayloadProtocol: data.PayloadProtocol,
-		fragments:       make([]fragment, 0, commonFragmentation),
+		// We preallocate a slice of fragments to avoid reallocating memory on every
+		// insert. The number is arbitrary, but we expect most messages to be small, so
+		// we set it to a small number.
+		Fragments: fragmentList{List: make([]fragment, 0, commonFragmentation)},
 	}
-	m.append(data)
 	return m
 }
 
-// Append stores a piece of a fragmented user message such that it can be
-// reassembled later.
+// Push stores a piece of a fragmented user message such that it can be
+// defragmented later into a reconstructed DATA chunk.
 //
 // It copies the payload from the layer because packets may become invalid by the
 // time the next chunk is processed.
-func (m *messageContext) append(data *layers.SCTPData) {
-	// We must copy the user data from the layer to ensure that it remains valid
-	// until we reassemble the message.
-	userData := make([]byte, len(data.UserData))
-	copy(userData, data.UserData) // Copies without the padding.
-	m.fragments = append(m.fragments, fragment{
-		TSN:           data.TSN,
-		UserData:      userData,
-		BeginFragment: data.BeginFragment,
-		EndFragment:   data.EndFragment,
-	})
+//
+// The function returns true if more fragments are expected (i.e. the message is
+// still incomplete), or false if the message appears complete and ready to be
+// reassembled.
+//
+// Note, this function doesn't guarantee that the message is indeed complete or
+// that reassembly will succeed indeed.
+func (m *messageContext) Push(data *layers.SCTPData) (more bool, err error) {
+	frag := copyFragment(data)
+	if err := m.Fragments.Insert(frag); err != nil {
+		return true, err
+	}
+	if !m.Fragments.BeginFragment {
+		return true, nil
+	}
+	if !m.Fragments.EndFragment {
+		return true, nil
+	}
+	// Consider two sequential fragments with TSNs A and B (A = B - 1), then the
+	// delta between them is 1, but there are two fragments in the list.
+	n := m.Fragments.deltaTSN(m.Fragments.EndTSN, m.Fragments.BeginTSN)
+	if int(n)+1 != len(m.Fragments.List) {
+		return true, nil
+	}
+	// If we get here, we seem to have all fragments of the message, so we can
+	// attempt and reassemble it.
+	return false, nil
 }
 
 var (
-	errMissingFragments     = errors.New("fragments are not strictly sequential")
-	errMissingBeginFragment = errors.New("missing first fragment")
-	errMissingEndFragment   = errors.New("missing last fragment")
-	errUserDataTooLong      = errors.New("user data exceeds maximum length (65535 bytes)")
+	errUserDataTooLong = errors.New("user data exceeds maximum length (65535 bytes)")
 )
 
 // Reassemble constructs a synthetic DATA chunk from the fragments of a user message.
 //
 // The returned chunk will have the following unique properties:
 //   - The TSN field will be set to 0.
-//   - The Content field is ni. Serialise the returned SCTPData to compute it.
+//   - The Content field is nil. Serialise the returned SCTPData to compute it.
 //   - The BeginFragment and EndFragment flags are set.
-func (m *messageContext) reassemble() (*layers.SCTPData, error) {
-	// We may have observed fragments out-of-order, so we must sort them by TSN
-	// before reassembling them.
-	sort.Slice(m.fragments, func(i, j int) bool {
-		return m.fragments[i].TSN < m.fragments[j].TSN
-	})
-	// We also want to ensure that the fragments are indeed strictly sequential, as
-	// the RFC mandates. Though ordered, the TSN values are not necessarily
-	// consecutive. For example, we may have missed a fragment but still called this
-	// function.
-	for i := 1; i < len(m.fragments); i++ {
-		step := m.fragments[i].TSN - m.fragments[i-1].TSN
-		if step != 1 {
-			return nil, errMissingFragments
-		}
+func (m *messageContext) Reassemble() (*layers.SCTPData, error) {
+	// First, we defragment the message by copying all fragments into a single byte
+	// slice. This is the UserData field of the DATA chunk.
+	userData := make([]byte, m.Fragments.TotalBytes())
+	userDataLen, err := m.Fragments.Defragment(userData)
+	if err != nil {
+		return nil, fmt.Errorf("defragment user-data: %w", err)
 	}
-	// We also want to ensure that the first fragment is indeed the first fragment,
-	// and that the last fragment is indeed the last fragment.
-	if !m.fragments[0].BeginFragment {
-		return nil, errMissingBeginFragment
+	userData = userData[:userDataLen] // Trim just in case, although we pre-allocated exactly the right size.
+
+	// The length field of a DATA chunk with a UserData field of length L will have
+	// the Length field set to (16 + L), indicating 16+L bytes, where L MUST be
+	// greater than 0.
+	length := 16 + userDataLen // Must be int to prevent uint16 overflows.
+	// Though supported by SCTP, supporting messages larger than 64KB would require
+	// more complexity from users. By upholding this limitation, we provide users
+	// with familiar DATA chunks.
+	if length > math.MaxUint16 {
+		return nil, errUserDataTooLong
 	}
-	if !m.fragments[len(m.fragments)-1].EndFragment {
-		return nil, errMissingEndFragment
-	}
+	// The Length field does not include any padding, but a valid chunk is always
+	// padded to a 4-byte boundary.
+	actual := roundUpToNearest4(length)
 
 	// The Flags field is composed of three flags: U, B, and E. While B and E are
 	// always on for whole messages, U is only on if the Unordered field is set.
@@ -325,12 +344,6 @@ func (m *messageContext) reassemble() (*layers.SCTPData, error) {
 		flags |= 0b0100 // U is on if the Unordered field is set.
 	}
 
-	// Serialise the synthetic chunk's byte representation to store as the contents
-	// of the SCTPData layer.
-	content, userData, err := m.serialiseContent()
-	if err != nil {
-		return nil, fmt.Errorf("synthesize chunk: %w", err)
-	}
 	// Finally, we can create a synthetic chunk with the reassembled User Data payload.
 	return &layers.SCTPData{
 		SCTPChunk: layers.SCTPChunk{
@@ -342,13 +355,13 @@ func (m *messageContext) reassemble() (*layers.SCTPData, error) {
 			Flags:     flags,
 			// This field indicates the length of the DATA chunk in bytes from the beginning
 			// of the type field to the end of the UserData field, excluding any padding.
-			Length:       uint16(16 + len(userData)),
-			ActualLength: len(content),
+			Length:       uint16(length), // Safely cast to uint16, as we checked earlier.
+			ActualLength: actual,
 		},
 		Unordered:       m.Unordered, // Preserve the Unordered flag.
 		BeginFragment:   true,        // Reassembled chunks always have the first bytes of a message.
 		EndFragment:     true,        // Reassembled chunks always have the last bytes of a message.
-		TSN:             0,
+		TSN:             0,           // Since this synthetic chunk spans several TSNs, we set it to 0.
 		StreamId:        m.StreamId,
 		StreamSequence:  m.StreamSequence,
 		PayloadProtocol: m.PayloadProtocol,
@@ -356,69 +369,197 @@ func (m *messageContext) reassemble() (*layers.SCTPData, error) {
 	}, nil
 }
 
-// This function is based on [layers.SCTPData.SerializeTo].
-//
-// The length field is the length of the DATA chunk, including the header and the
-// user data, excluding any padding.
-//
-// This function assumes that all message fragments have been collected and
-// sorted already (that is, no chunk is missing from the sequence).
-func (m *messageContext) serialiseContent() (content []byte, userData []byte, err error) {
-	// First, we sum up the total length of all fragments to allocate the correct
-	// amount of memory for the reassembled payload, once.
-	var size int
-	for _, frag := range m.fragments {
-		size += len(frag.UserData)
-	}
-	// The length field of a DATA chunk with a UserData field of length L will have
-	// the Length field set to (16 + L), indicating 16+L bytes, where L MUST be
-	// greater than 0.
-	length := 16 + size // Must be int to prevent uint16 overflows.
-	// Though supported by SCTP, supporting messages larger than 64KB would require
-	// more complexity from users. By upholding this limitation, we provide users
-	// with familiar DATA chunks.
-	if length > math.MaxUint16 {
-		return nil, nil, errUserDataTooLong
-	}
-	// The Length field does not include any padding, but a valid chunk is always
-	// padded to a 4-byte boundary.
-	actual := roundUpToNearest4(length)
-
-	// We allocate the underlying memory only once for efficiency.
-	content = make([]byte, actual)
-	// Now we are ready to fill in the content of a synthetic DATA chunk that would
-	// carry the entire message. In a theoretical and ideal network, this single
-	// chunk would be enough to prevent the message from fragmenting.
-	content[0] = uint8(layers.SCTPChunkTypeData)
-	flags := uint8(0b0011) // The B and E flags are always set for unfragmented messages.
-	if m.Unordered {
-		flags |= 0b0100
-	}
-	content[1] = flags
-	binary.BigEndian.PutUint16(content[2:4], uint16(length)) // No integer overflow guaranteed by earlier checks.
-	binary.BigEndian.PutUint32(content[4:8], 0)              // TSN is always 0 for reassembled messages.
-	binary.BigEndian.PutUint16(content[8:10], m.StreamId)
-	binary.BigEndian.PutUint16(content[10:12], m.StreamSequence)
-	binary.BigEndian.PutUint32(content[12:16], uint32(m.PayloadProtocol))
-
-	// All that's left now is to COPY all fragments into the chunk's content buffer.
-	// Any padding bytes are already allocated and zeroed.
-	offset := 16
-	for _, frag := range m.fragments {
-		copy(content[offset:], frag.UserData)
-		offset += len(frag.UserData)
-	}
-	// The userData slice overlaps with the entire content, spanning from the 17th
-	// byte until the padding (excluding).
-	userData = content[16:offset]
-	return content, userData, nil
-}
-
 func roundUpToNearest4(i int) int {
 	if i%4 == 0 {
 		return i
 	}
 	return i + 4 - (i % 4)
+}
+
+// A fragmentList holds a list used to contain SCTP fragments, which are
+// extraction of DATA chunks.
+//
+// It stores internal counters to track the maximum total of bytes accumulated
+// and the current length it has received. It also stores a flag to know if he
+// has seen the last packet.
+type fragmentList struct {
+	List []fragment // A list of fragments that have been received so far.
+
+	// Indicates whether the first fragment has been seen.
+	//
+	// TSN 0 is a valid TSN, so we can’t use it to determine if the first fragment
+	// has been seen.
+	BeginFragment bool
+	BeginTSN      uint32 // The TSN of the first fragment, not necessarily the lowest TSN (due to TSN overflow).
+	// Indicates whether the last fragment has been seen.
+	//
+	// TSN 0 is a valid TSN, so we can’t use it to determine if the last fragment
+	// has been seen.
+	EndFragment bool
+	EndTSN      uint32 // The TSN of the last fragment, not necessarily the highest TSN (due to TSN overflow).
+}
+
+func (l *fragmentList) Insert(f fragment) error {
+	// Retransmissions may occur, so we need to check if the fragment is already
+	// present in the list. If it is, we can ignore it.
+	//
+	// We simply iterate over the list without optimisation, as the number of
+	// fragments is expected to be small (most certainly single digits).
+	for _, existing := range l.List {
+		if f.TSN == existing.TSN {
+			// If the fragment is already present, we ignore it without checking that it is
+			// indeed the same as the existing one.
+			return nil
+		}
+	}
+
+	// The first fragment of a message is special because it is critical to correctly
+	// ordering the other fragments, which is non-trivial due to TSN overflows.
+	if f.BeginFragment {
+		// If we've already seen the first fragment, we cannot insert another one unless
+		// it is the same TSN (due to retransmissions).
+		if l.BeginFragment {
+			if f.TSN != l.BeginTSN {
+				return fmt.Errorf("message already began with TSN %v", l.BeginTSN)
+			}
+			// If the TSN is the same, we can safely ignore this fragment. Though the loop
+			// above checks the exact same condition, so this is redundant, and here for
+			// clarity.
+			return nil
+		}
+		// If this is indeed the first fragment, we set the flag and the TSN value.
+		l.BeginFragment = true
+		l.BeginTSN = f.TSN
+	}
+
+	// The last fragment of a message is special because it indicates that the
+	// message is complete and that no more fragments with TSNs greater than this one
+	// will be received.
+	if f.EndFragment {
+		// If we've already seen the last fragment, we cannot insert another one unless
+		// it is the same TSN (due to retransmissions).
+		if l.EndFragment {
+			if f.TSN != l.EndTSN {
+				return fmt.Errorf("message already ended with TSN %v", l.EndTSN)
+			}
+			// If the TSN is the same, we can safely ignore this fragment. Though the loop
+			// above checks the exact same condition, so this is redundant, and here for
+			// clarity.
+			return nil
+		}
+		// If this is indeed the last fragment, we set the flag and the TSN value.
+		l.EndFragment = true
+		l.EndTSN = f.TSN
+	}
+
+	// If we get here, we have a new fragment to insert.
+	l.List = append(l.List, f)
+	return nil
+}
+
+var (
+	errMissingFragments     = errors.New("fragments are not strictly sequential")
+	errMissingBeginFragment = errors.New("missing first fragment")
+	errMissingEndFragment   = errors.New("missing last fragment")
+)
+
+// Defragment reassembles the fragments into a continuous byte slice that can be
+// used as the UserData field of a DATA chunk.
+//
+// This function assumes that all message fragments have been collected (that is,
+// no chunk is missing from the sequence). It doesn't check for missing
+// fragments; callers must ensure that all fragments are present before calling
+// this function.
+//
+// It returns the total length of the reassembled message and a boolean indicating
+// whether the defragmentation was successful.
+func (l *fragmentList) Defragment(userData []byte) (n int, err error) {
+	// First, we check if the output buffer is large enough to hold the entire
+	// defragmented message.
+	if size := l.TotalBytes(); len(userData) < size {
+		return size, fmt.Errorf("not enough space to defragment message: %v < %v", len(userData), size)
+	}
+
+	// We may have observed fragments out-of-order, so we must sort them by TSN
+	// before reassembling them, accounting for TSN wraparound.
+	sort.Slice(l.List, func(i, j int) bool {
+		return l.deltaTSN(l.List[i].TSN, l.List[j].TSN) < 0
+	})
+
+	// We also want to ensure that the fragments are indeed strictly sequential, as
+	// the RFC mandates. Though ordered, the TSN values are not necessarily
+	// consecutive. For example, we may have missed a fragment but still called this
+	// function.
+	for i := 1; i < len(l.List); i++ {
+		prev, curr := l.List[i-1].TSN, l.List[i].TSN
+		if l.deltaTSN(prev, curr) != -1 {
+			return 0, errMissingFragments
+		}
+	}
+
+	// We also want to ensure that the first fragment is indeed the first fragment,
+	// and that the last fragment is indeed the last fragment.
+	//
+	// We don't need to check their TSNs because the BeginFragment and EndFragment
+	// flags are set only once during Insert.
+	if !l.List[0].BeginFragment {
+		return 0, errMissingBeginFragment
+	}
+	if !l.List[len(l.List)-1].EndFragment {
+		return 0, errMissingEndFragment
+	}
+
+	// All that's left now is to COPY all fragments into the chunk's content buffer.
+	// Any padding bytes are already allocated and zeroed.
+	var offset int
+	for _, frag := range l.List {
+		offset += copy(userData[offset:], frag.UserData)
+	}
+	return offset, nil
+}
+
+// TotalBytes trivially sums all fragments, as we don't have any padding in the
+// fragments.
+//
+// The list of fragments is expected to be small, so we can afford to iterate
+// over it without optimisations (e.g. summarising as fragments are inserted).
+func (l *fragmentList) TotalBytes() (sum int) {
+	for _, frag := range l.List {
+		sum += len(frag.UserData)
+	}
+	return sum
+}
+
+// DeltaTSN calculates the difference between two TSNs, taking into account
+// wraparound. It returns the difference as an int64, which can be negative if
+// the first (left) TSN is greater than the second (right).
+//
+// The difference between two uint32 values can be at most (2^32 - 1), which is
+// the maximum value of uint32, so we can safely use int64 (though not int) to
+// represent that difference.
+//
+// Wraparound occurs when a TSN is less than the list's beginning TSN, which is
+// the TSN of the first fragment in the list. The SCTP specification caps message
+// size below 2^32.
+func (l *fragmentList) deltaTSN(left, right uint32) int64 {
+	// TODO: test this function once.
+	if left == right {
+		return 0
+	}
+	// To compare TSNs correctly accounting for wraparound, we expand them from
+	// unsigned 32-bits to signed 64-bits.
+	first, second := int64(left), int64(right)
+	if left < l.BeginTSN {
+		// We add 1 to the BeginTSN to account for the fact that 0 is a valid TSN, so we
+		// need to shift the range of TSNs to start from 1.
+		first += int64(l.BeginTSN) + 1
+	}
+	if right < l.BeginTSN {
+		// We add 1 to the BeginTSN to account for the fact that 0 is a valid TSN, so we
+		// need to shift the range of TSNs to start from 1.
+		second += int64(l.BeginTSN) + 1
+	}
+	return first - second
 }
 
 // A fragment holds a portion of a user message.
@@ -442,6 +583,21 @@ type fragment struct {
 	// EndFragment indicates whether this fragment is the last chunk of the
 	// fragmented message.
 	EndFragment bool
+}
+
+// Call copyFragment to copy the payload from the given DATA chunk because
+// gopacket doesn't guarantee that underlying buffers aren’t reused over time.
+func copyFragment(data *layers.SCTPData) fragment {
+	// We must copy the user data from the layer to ensure that it remains valid
+	// until we reassemble the message.
+	userData := make([]byte, len(data.UserData))
+	copy(userData, data.UserData) // Copies without the padding.
+	return fragment{
+		TSN:           data.TSN,
+		UserData:      userData,
+		BeginFragment: data.BeginFragment,
+		EndFragment:   data.EndFragment,
+	}
 }
 
 func (f fragment) String() string {

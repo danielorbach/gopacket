@@ -3,13 +3,16 @@ package sctpdefrag_test
 import (
 	"bytes"
 	_ "embed"
+	"encoding/binary"
 	"io"
+	"net"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/bytediff"
+	"github.com/google/gopacket/defrag/defragtest"
 	"github.com/google/gopacket/defrag/sctpdefrag"
 	"github.com/google/gopacket/layers"
 	"github.com/google/gopacket/pcapgo"
@@ -207,3 +210,138 @@ var fragmentedPCAP []byte
 
 //go:embed testdata/fragments-reassembled.bin
 var defragmentedMessage []byte
+
+func TestOutOfOrderChunks(t *testing.T) {
+	var (
+		// Any message will do.
+		message = []byte("🎶 “Never gonna give you up, never gonna let you down…” 🎶")
+		// We use an arbitrary association because this test cares about the order, not about
+		// the associations themselves.
+		assoc = sctpdefrag.Association{
+			Addresses:       gopacket.NewFlow(layers.EndpointIPv4, net.IPv4(1, 1, 1, 1), net.IPv4(2, 2, 2, 2)),
+			Ports:           gopacket.NewFlow(layers.EndpointSCTPPort, layers.NewSCTPPortEndpoint(3).Raw(), layers.NewSCTPPortEndpoint(4).Raw()),
+			VerificationTag: 5,
+		}
+	)
+
+	// This test shuffles the DATA chunks so they are processed out of order.
+	dataSource, err := defragtest.Fragment(
+		defragtest.FragmenterFunc(fragmentSCTPData),
+		message,
+		defragtest.WithFragments(5),
+		defragtest.WithOrder(defragtest.ShuffleOrder),
+		defragtest.WithLayers(baseLayersForAssociation(assoc)...),
+	)
+	if err != nil {
+		t.Fatalf("Failed to create fragmented packet data source: %v", err)
+	}
+	source := gopacket.NewPacketSource(dataSource, layers.LayerTypeEthernet)
+	source.NoCopy = true
+
+	// The test data capture contains only a single SCTP message, so no need to
+	var reassembled *layers.SCTPData
+
+	// It shouldn't matter whether we use the Decoder API of the DecodingLayerAPI.
+	// For simplicity, we chose the classic one that is easier to code and review.
+	defrag := sctpdefrag.NewDefragmenter()
+	for p := range source.Packets() {
+		chunk := p.Layer(layers.LayerTypeSCTPData).(*layers.SCTPData)
+		reassembled, err = defrag.DefragData(assoc, chunk)
+		if err != nil {
+			t.Logf("Decoded chunk = %v", gopacket.LayerString(chunk))
+			t.Errorf("DefragData(TSN=%v) error = %v", chunk.TSN, err)
+		}
+	}
+	if reassembled == nil {
+		t.Fatalf("Defragmenter did not reassemble the message")
+	}
+
+	// We check that the reassembled message is as expected.
+	if !bytes.Equal(reassembled.Payload(), message) {
+		diff := bytediff.Diff(reassembled.Payload(), message)
+		t.Errorf("Reassembly produced the wrong message (BASH-colorized diff, got->want):\n%v\n---PACKET (reassembled)---\n%v", bytediff.BashOutput.String(diff), gopacket.LayerDump(reassembled))
+	}
+}
+
+func fragmentSCTPData(payload []byte, index, total int) (gopacket.SerializableLayer, error) {
+	const baseTSN = 0x12345678
+	return &layers.SCTPData{
+		Unordered:       false,
+		BeginFragment:   index == 0,              // Set the B flag when appropriate.
+		EndFragment:     index == total-1,        // Set the E flag when appropriate.
+		TSN:             uint32(baseTSN + index), // Increment TSN for each chunk.
+		StreamId:        1,
+		StreamSequence:  2,
+		PayloadProtocol: layers.SCTPProtocolReserved, // Use the reserved protocol for this test.
+		UserData:        payload,
+	}, nil
+}
+
+// Generated packet data holds Ethernet frames containing a single SCTP DATA
+// chunk, no SACK or other chunks included. Most of the fields of the Ethernet,
+// IP, and SCTP layers are hard-coded to meaningless values.
+func baseLayersForAssociation(assoc sctpdefrag.Association) []gopacket.SerializableLayer {
+	// We always use Ethernet as the link layer.
+	link := &layers.Ethernet{
+		SrcMAC:       net.HardwareAddr{8, 8, 8, 8, 8, 8},
+		DstMAC:       net.HardwareAddr{9, 9, 9, 9, 9, 9},
+		EthernetType: layers.EthernetTypeIPv4,
+		Length:       0, // Fixed by serialisation.
+	}
+	// We use IP 4/6 based on the association's peers.
+	var network interface {
+		gopacket.NetworkLayer
+		gopacket.SerializableLayer
+	}
+	switch assoc.Addresses.EndpointType() {
+	case layers.EndpointIPv4:
+		network = &layers.IPv4{
+			Version:    4,
+			IHL:        5, // Fixed by serialisation.
+			TOS:        0, // Check the spec for this field.
+			Length:     0, // Fixed by serialisation.
+			Id:         0, // Zero for non-fragmented IP packets.
+			Flags:      layers.IPv4DontFragment,
+			FragOffset: 0, // SCTP packets aren't fragmented by design.
+			TTL:        64,
+			Protocol:   layers.IPProtocolSCTP,
+			Checksum:   0, // Fixed by serialisation.
+			SrcIP:      assoc.Addresses.Src().Raw(),
+			DstIP:      assoc.Addresses.Dst().Raw(),
+			Options:    nil,
+			Padding:    nil,
+		}
+	case layers.EndpointIPv6:
+		network = &layers.IPv6{
+			Version:      6,
+			TrafficClass: 0,
+			FlowLabel:    0,
+			Length:       0, // Fixed by serialisation.
+			NextHeader:   layers.IPProtocolSCTP,
+			HopLimit:     255,
+			SrcIP:        assoc.Addresses.Src().Raw(),
+			DstIP:        assoc.Addresses.Dst().Raw(),
+			HopByHop:     nil,
+		}
+	default:
+		panic("FragmentMessage association only supports IPv4 and IPv6 addresses")
+	}
+
+	if assoc.Ports.EndpointType() != layers.EndpointSCTPPort {
+		panic("FragmentMessage association only supports SCTP ports")
+	}
+
+	// We always ever fragment SCTP messages in this package.
+	transport := &layers.SCTP{
+		SrcPort:         layers.SCTPPort(binary.BigEndian.Uint16(assoc.Ports.Src().Raw())),
+		DstPort:         layers.SCTPPort(binary.BigEndian.Uint16(assoc.Ports.Dst().Raw())),
+		VerificationTag: assoc.VerificationTag,
+		Checksum:        0, // Fixed by serialisation.
+	}
+
+	return []gopacket.SerializableLayer{link, network, transport}
+}
+
+// TODO: test retransmission (duplicate chunks).
+
+// TODO: test TSN wraparound (e.g. TSN=0xFFFFFFFF, TSN=0x00000000).
