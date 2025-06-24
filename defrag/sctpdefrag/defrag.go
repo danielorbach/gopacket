@@ -3,6 +3,7 @@ package sctpdefrag
 import (
 	"errors"
 	"fmt"
+	"log/slog"
 	"math"
 	"sort"
 	"strconv"
@@ -12,15 +13,67 @@ import (
 	"github.com/google/gopacket/layers"
 )
 
-// Defragmenter reassembles SCTP DATA chunks that have been fragmented.
-// SCTP allows messages to be split across multiple DATA chunks using
-// BeginFragment and EndFragment flags.
+// NewDefragmenter creates a powerful SCTP DATA chunk defragmenter that handles
+// the intricate task of reassembling fragmented messages across multiple
+// associations.
 //
-// TODO: explain a defragmented per association & direction.
-// TODO: support a NoCopy option for better performance in appropriate scenarios.
+// SCTP's message-oriented nature means that large application messages may be
+// split across multiple DATA chunks when they exceed the path MTU. This
+// defragmenter intelligently tracks these fragments by association, stream, and
+// sequence number, ensuring perfect reconstruction even in complex
+// multi-association scenarios.
+func NewDefragmenter(opts ...Option) *Defragmenter {
+	d := &Defragmenter{
+		reassembly: make(map[messageKey]*messageContext),
+	}
+	for _, opt := range opts {
+		opt(d)
+	}
+	return d
+}
+
+// Option configures a Defragmenter with specific behaviours during creation.
+//
+// This functional options pattern allows for clean, extensible configuration
+// without breaking existing code when new options are added.
+type Option func(*Defragmenter)
+
+// WithLogger equips the defragmenter with structured logging capabilities,
+// enabling detailed insights into the fragmentation and reassembly process.
+//
+// When provided, the logger captures rich contextual information about each
+// processed chunk, including association details, stream identifiers, and
+// fragmentation flags - invaluable for debugging complex SCTP scenarios.
+//
+// If no logger is specified, the defragmenter discards all log output by default,
+// ensuring silent operation unless explicitly configured otherwise.
+func WithLogger(logger *slog.Logger) Option {
+	return func(d *Defragmenter) {
+		d.baseLogger = logger
+	}
+}
+
+// Defragmenter orchestrates the complex dance of SCTP message reassembly,
+// transforming scattered DATA chunk fragments back into complete messages.
+//
+// SCTP's reliability comes with a unique challenge: when application messages
+// exceed the path MTU, they're fragmented across multiple DATA chunks marked
+// with BeginFragment and EndFragment flags. This defragmenter maintains a
+// sophisticated state machine that tracks these fragments across multiple
+// concurrent associations and streams, tolerating retransmissions, out-of-order
+// delivery, and TSN wraparound scenarios with grace.
+//
+// The defragmenter operates statelessly from the caller's perspective - simply
+// feed it DATA chunks as they arrive, and it will return complete messages when
+// all fragments have been collected. Behind the scenes, it manages an internal
+// reassembly map keyed by association, stream ID, and sequence number.
+//
+// Messages are defragmented per [Association] (unidirectional channel), ensuring
+// complete isolation between different traffic flows.
 type Defragmenter struct {
 	// Maps stream identifier and sequence number to a list of fragments.
 	reassembly map[messageKey]*messageContext
+	baseLogger *slog.Logger
 }
 
 // TODO: document package.
@@ -30,13 +83,6 @@ type Defragmenter struct {
 // TODO: expose statistics (processed chunks, reassembled chunks, invalid chunks, invalid internal states, etc).
 
 // TODO: optimise with memory pool because all non-last fragments are the same size (controlled by the PMTU).
-
-// NewDefragmenter creates a new SCTP DATA chunk defragmenter.
-func NewDefragmenter() *Defragmenter {
-	return &Defragmenter{
-		reassembly: make(map[messageKey]*messageContext),
-	}
-}
 
 // DefragData takes in a DATA chunk with a possibly fragmented payload and
 // returns either:
@@ -69,7 +115,7 @@ func NewDefragmenter() *Defragmenter {
 // Processing chunks in any order is useful when the observed traffic contains
 // retransmissions (e.g. due to selective acknowledgements with gaps).
 func (d *Defragmenter) DefragData(assoc Association, data *layers.SCTPData) (complete *layers.SCTPData, err error) {
-	key := messageKeyOf(assoc, data)
+	logger := d.loggerForChunk(assoc, data)
 
 	// Immediately return if the chunk is invalid for defragmentation.
 	if err := checkDataChunk(data); err != nil {
@@ -78,12 +124,14 @@ func (d *Defragmenter) DefragData(assoc Association, data *layers.SCTPData) (com
 
 	// Shortcut for whole messages that are not fragmented - return immediately.
 	if data.BeginFragment && data.EndFragment {
+		logger.Debug("[Defragmenter.DefragData] Returning complete message (no fragmentation)")
 		return data, nil
 	}
 
 	// The first packet we encounter for a specific sequence, of a specific stream,
 	// in a specific association, isn't necessarily the first fragment of the
 	// message.
+	key := messageKeyOf(assoc, data)
 	context, ok := d.reassembly[key]
 	if !ok {
 		// Note that beginMessageReassembly does not Push the data chunk into the
@@ -99,6 +147,7 @@ func (d *Defragmenter) DefragData(assoc Association, data *layers.SCTPData) (com
 	if more {
 		// If we get here, the message is still incomplete and waiting for more
 		// fragments, so we return nil.
+		logger.Debug("[Defragmenter.DefragData] Message is still fragmented", slog.Any("context", context))
 		return nil, nil
 	}
 
@@ -113,7 +162,28 @@ func (d *Defragmenter) DefragData(assoc Association, data *layers.SCTPData) (com
 		return nil, fmt.Errorf("reassemble: %w", err)
 	}
 	delete(d.reassembly, key)
+	logger.Debug("[Defragmenter.DefragData] Reassembled message", slog.Any("context", context))
 	return reassembled, nil
+}
+
+func (d *Defragmenter) loggerForChunk(assoc Association, data *layers.SCTPData) *slog.Logger {
+	logger := d.baseLogger
+	if logger == nil {
+		logger = slog.New(slog.DiscardHandler)
+	}
+	return logger.With(
+		slog.Group("chunk",
+			slog.Any("assoc", assoc),
+			slog.Int("sid", int(data.StreamId)),
+			slog.Int("ssn", int(data.StreamSequence)),
+			slog.Uint64("tsn", uint64(data.TSN)),
+			slog.Int("length", len(data.UserData)),
+			slog.Group("flags",
+				slog.Bool("begin", data.BeginFragment),
+				slog.Bool("end", data.EndFragment),
+			),
+		),
+	)
 }
 
 func checkDataChunk(data *layers.SCTPData) error {
@@ -206,6 +276,14 @@ func NewAssociation(ip gopacket.NetworkLayer, sctp *layers.SCTP) Association {
 
 func (a Association) String() string {
 	return fmt.Sprintf("Peers=%v:%v->%v:%v TAG=%v", a.Addresses.Src(), a.Ports.Src(), a.Addresses.Dst(), a.Ports.Dst(), a.VerificationTag)
+}
+
+func (a Association) LogValue() slog.Value {
+	peers := fmt.Sprintf("%s:%d->%s:%d", a.Addresses.Src().String(), a.Ports.Src(), a.Addresses.Dst().String(), a.Ports.Dst())
+	return slog.GroupValue(
+		slog.String("peers", peers),
+		slog.String("tag", strconv.FormatUint(uint64(a.VerificationTag), 10)),
+	)
 }
 
 // A messageContext tracks the fragments of a specific message in a stream.
@@ -367,6 +445,16 @@ func (m *messageContext) Reassemble() (*layers.SCTPData, error) {
 		PayloadProtocol: m.PayloadProtocol,
 		UserData:        userData,
 	}, nil
+}
+
+func (m *messageContext) LogValue() slog.Value {
+	return slog.GroupValue(
+		slog.Bool("unordered", m.Unordered),
+		slog.Int("stream_id", int(m.StreamId)),
+		slog.Int("stream_sequence", int(m.StreamSequence)),
+		slog.String("payload_protocol", m.PayloadProtocol.String()),
+		slog.Any("fragments", m.Fragments),
+	)
 }
 
 func roundUpToNearest4(i int) int {
@@ -560,6 +648,15 @@ func (l *fragmentList) deltaTSN(left, right uint32) int64 {
 		second += int64(l.BeginTSN) + 1
 	}
 	return first - second
+}
+
+func (l *fragmentList) LogValue() slog.Value {
+	return slog.GroupValue(
+		slog.Int("totalBytes", l.TotalBytes()),
+		slog.Bool("beginFragment", l.BeginFragment),
+		slog.Uint64("beginTSN", uint64(l.BeginTSN)),
+		slog.Any("chunks", len(l.List)),
+	)
 }
 
 // A fragment holds a portion of a user message.
