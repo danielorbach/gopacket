@@ -1,3 +1,93 @@
+// Package sctpdefrag provides intelligent reassembly of fragmented SCTP messages,
+// handling the complexities of the Stream Control Transmission Protocol's
+// message-oriented delivery system in compliance with [RFC9260].
+//
+// SCTP fragments large user messages that exceed the path MTU across multiple
+// DATA chunks. This package tracks and reassembles these fragments, managing
+// multiple concurrent associations and streams while gracefully handling
+// retransmissions, out-of-order delivery, and TSN wraparound.
+//
+// The defragmenter maintains complete isolation between associations, ensuring
+// that fragments from different traffic flows never interfere. Within each
+// association, messages are tracked by stream ID and sequence number, allowing
+// proper reassembly even when multiple fragmented messages are in flight.
+//
+// # Terminology
+//
+// The following terms are used throughout this package:
+//
+//   - SCTP Association:
+//     A protocol relationship between SCTP endpoints, composed of the two SCTP
+//     endpoints and protocol state information, including Verification Tags and the
+//     currently active set of Transmission Sequence Numbers (TSNs), etc. An
+//     association can be uniquely identified by the transport addresses used by the
+//     endpoints in the association. Two SCTP endpoints MUSTN’T have more than one
+//     SCTP association between them at any given time.
+//
+//   - SCTP Endpoint:
+//     The logical sender/receiver of SCTP packets. All transport addresses used by
+//     an SCTP endpoint MUST use the same port number but can use multiple IP
+//     addresses. A transport address used by an SCTP endpoint MUSTN’T be used by
+//     another SCTP endpoint. In other words, a transport address is unique to an
+//     SCTP endpoint.
+//
+//   - Transport Address:
+//     A transport address is typically defined by a network-layer address, a
+//     transport-layer protocol, and a transport-layer port number. In the case of
+//     SCTP running over IP, a transport address is defined by the combination of an
+//     IP address and an SCTP port number (where SCTP is the transport protocol).
+//
+//   - SCTP Packet (or Packet):
+//     The unit of data delivery across the interface between SCTP and the
+//     connectionless packet network (e.g. IP). An SCTP packet includes the common
+//     SCTP header, possible SCTP control chunks, and user data encapsulated within
+//     SCTP DATA chunks.
+//
+//   - Chunk:
+//     A unit of information within an SCTP packet consisting of a chunk header and
+//     chunk-specific content.
+//
+//   - Stream:
+//     A unidirectional logical channel established from one to another associated SCTP
+//     endpoint, within which all user messages are delivered in sequence, except for
+//     those submitted to the unordered delivery service.
+//
+//   - Stream Sequence Number:
+//     A 16-bit sequence number used internally by SCTP to ensure sequenced delivery of
+//     the user messages within a given stream. One Stream Sequence Number is attached
+//     to each ordered user message.
+//
+//   - Transmission Sequence Number (TSN):
+//     A 32-bit sequence number used internally by SCTP. One TSN is attached to each
+//     chunk containing user data to permit the receiving SCTP endpoint to acknowledge
+//     its receipt and detect duplicate deliveries.
+//
+//   - Path Maximum Transmission Unit (PMTU):
+//     The maximum size (including the SCTP common header and all chunks including
+//     their paddings) of an SCTP packet that can be sent to a particular destination
+//     address without using IP-level fragmentation.
+//
+// # Fragmentation
+//
+// When needed, SCTP fragments user messages to ensure that the size of the SCTP
+// packet passed to the lower layer doesn't exceed the PMTU. On receipt, fragments
+// are reassembled into complete messages before being passed to the SCTP user.
+//
+// When a user message is fragmented into multiple chunks, the TSNs are used by the
+// receiver to reassemble the message. This means that the TSNs for each fragment
+// of a fragmented user message MUST be strictly sequential.
+//
+// The TSNs of DATA chunks sent SHOULD be strictly sequential within each association.
+//
+// # Memory Safety
+//
+// This package defensively copies all fragment data from the input DATA chunks,
+// as gopacket may reuse underlying packet buffers. This means you can safely
+// use this package even with gopacket's NoCopy decoding options - the defragmenter
+// will always maintain its own copies of fragment data to ensure correct reassembly
+// across multiple packet processing cycles.
+//
+// [RFC9260]: https://www.rfc-editor.org/rfc/rfc9260.html
 package sctpdefrag
 
 import (
@@ -75,8 +165,6 @@ type Defragmenter struct {
 	reassembly map[messageKey]*messageContext
 	baseLogger *slog.Logger
 }
-
-// TODO: document package.
 
 // TODO: purge the reassembly map of contexts that are no longer needed (by association).
 
