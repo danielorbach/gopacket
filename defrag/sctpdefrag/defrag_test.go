@@ -220,8 +220,8 @@ func TestOutOfOrderChunks(t *testing.T) {
 	)
 
 	// This test shuffles the DATA chunks so they are processed out of order.
-	dataSource, err := defragtest.Fragment(
-		defragtest.FragmenterFunc(fragmentSCTPData),
+	dataSource, err := defragtest.DataSource(
+		defragtest.TemplateFunc(renderSCTPDataChunk),
 		message,
 		defragtest.WithFragments(5),
 		defragtest.WithOrder(defragtest.ShuffleOrder),
@@ -247,7 +247,7 @@ func TestOutOfOrderChunks(t *testing.T) {
 	}
 }
 
-func fragmentSCTPData(payload []byte, index, total int) (gopacket.SerializableLayer, error) {
+func renderSCTPDataChunk(payload []byte, index, total int) (gopacket.SerializableLayer, error) {
 	const baseTSN = 0x12345678
 	return &layers.SCTPData{
 		Unordered:       false,

@@ -13,25 +13,25 @@ import (
 // This example demonstrates how to use the defragtest package to fragment
 // messages into several packets for testing defragmentation packages.
 //
-// The entrypoint into this package is its [defragtest.Fragment] function. It a
-// payload to split into parts, and a [defragtest.Fragmenter] to transform each
-// part into the appropriate layer.
+// The entrypoint into this package is its [defragtest.DataSource] function. It
+// takes a payload to split into parts and a [defragtest.Template] to render each
+// part as the appropriate layer.
 //
-// The package also exposes several options to customise how the payload is
+// The package also exposes several options to customize how the payload is
 // fragmented. See [defragtest.Options] and its With* functions for more details.
 func Example() {
 	// For this example, we use this string, but any slice of bytes will do.
 	const message = "Hello, world! I am a large message..."
 
-	// The package exposes FragmenterFunc to easily use arbitrary functions as
-	// Fragmenters.
-	fragmenter := defragtest.FragmenterFunc(FragmentLayer)
-	// The Fragment function returns a synthetic packet data source that can be used
-	// to generate packets containing each fragment.
-	packetDataSource, err := defragtest.Fragment(fragmenter, []byte(message),
+	// The package exposes TemplateFunc to easily use arbitrary functions as
+	// Templates.
+	template := defragtest.TemplateFunc(RenderGenericFragment)
+	// The DataSource function returns a synthetic packet data source that can be
+	// used to generate packets containing each fragment.
+	packetDataSource, err := defragtest.DataSource(template, []byte(message),
 		// You must set either the number of fragments (using WithFragments) or the
 		// maximum size of each fragment (using WithMaxFragmentSize). The two options are
-		// mutually exclusive, so Fragment will fail if both are present.
+		// mutually exclusive, so DataSource will fail if both are present.
 		defragtest.WithFragments(3),
 		// You may set the timestamp as part of the gopacket.CaptureInfo of each packet.
 		defragtest.WithCaptureTimestamp(time.Date(2006, 5, 4, 3, 2, 1, 0, time.UTC)),
@@ -130,24 +130,25 @@ func Example() {
 	// 00000000  20 6d 65 73 73 61 67 65  2e 2e 2e                 | message...|
 }
 
-// FragmentLayer is an example implementation of a simple fragmenter that wraps
-// payloads in a generic gopacket.Fragment layer.
+// RenderGenericFragment is an example implementation of a simple template
+// function that wraps payloads in a generic gopacket.Fragment layer.
 //
 // In real-world implementations, you would typically:
-//   - Use index to set fragment-specific fields (e.g. fragment offset)
-//   - Use total to determine if this is the last fragment (e.g. to clear a "more fragments" flag)
-//   - Create protocol-specific layers instead of generic Fragment
-//   - Handle fragmentation headers or other protocol requirements
+//   - Use index to set fragment-specific fields (e.g. fragment offset).
+//   - Use total to determine if this is the last fragment (e.g. to clear a "more fragments" flag).
+//   - Create protocol-specific layers instead of generic Fragment.
+//   - Handle fragmentation headers or other protocol requirements.
 //
-// For example, an SCTP fragmenter might set BeginFragment and EndFragment flags
-// based on whether this is the first or last fragment in the sequence.
-func FragmentLayer(payload []byte, index, total int) (gopacket.SerializableLayer, error) {
+// For example, an SCTP template might set BeginFragment and
+// EndFragment flags based on whether this is the first or last fragment in the
+// sequence.
+func RenderGenericFragment(payload []byte, index, total int) (gopacket.SerializableLayer, error) {
 	// In a real implementation, these would be used to configure the fragment.
-	// For example:
-	//   - isFirst := index == 0
-	//   - isLast := index == total-1
-	_ = index // Fragment position in sequence (0-based)
-	_ = total // Total number of fragments
+	//
+	// For example, the opening fragment is denoted by (index == 0) and the closing
+	// fragment is denoted by (index == total-1).
+	_ = index // Fragment position in sequence (0-based).
+	_ = total // Total number of fragments.
 
 	frag := gopacket.Fragment(payload)
 	return &frag, nil
