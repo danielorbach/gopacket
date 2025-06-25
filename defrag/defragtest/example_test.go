@@ -11,58 +11,56 @@ import (
 )
 
 // This example demonstrates how to use the defragtest package to fragment
-// messages into several packets for testing defragmentation packages.
+// payloads into several packets for testing defragmentation packages.
 //
-// The entrypoint into this package is its [defragtest.DataSource] function. It
-// takes a payload to split into parts and a [defragtest.Template] to render each
-// part as the appropriate layer.
+// The example shows how to fragment a UDP packet that exceeds the MTU, creating
+// multiple IPv4 fragments with proper fragment offsets and flags.
+//
+// The generated packets are accessible by reading packet data from the
+// [gopacket.PacketDataSource] returned by [defragtest.DataSource]. It takes a
+// payload to split into parts and a [defragtest.Template] to render each part as
+// the appropriate layers.
 //
 // The package also exposes several options to customize how the payload is
 // fragmented. See [defragtest.Options] and its With* functions for more details.
 func Example() {
-	// For this example, we use this string, but any slice of bytes will do.
-	const message = "Hello, world! I am a large message..."
+	// Simulate a large UDP packet payload that will be fragmented. In a real
+	// scenario, this could be any byte slice.
+	const largeUDPPayload = "This is a large payload that exceeds the MTU and must be fragmented at the IP layer"
 
 	// The package exposes TemplateFunc to easily use arbitrary functions as
-	// Templates.
-	template := defragtest.TemplateFunc(RenderGenericFragment)
+	// Templates. We've created a template function that demonstrates proper IPv4
+	// fragmentation.
+	template := defragtest.TemplateFunc(RenderIPv4Fragment)
 	// The DataSource function returns a synthetic packet data source that can be
 	// used to generate packets containing each fragment.
-	packetDataSource, err := defragtest.DataSource(template, []byte(message),
-		// You must set either the number of fragments (using WithFragments) or the
+	packetDataSource, err := defragtest.DataSource(template, []byte(largeUDPPayload),
+		// Callers must set either the number of fragments (using WithFragments) or the
 		// maximum size of each fragment (using WithMaxFragmentSize). The two options are
 		// mutually exclusive, so DataSource will fail if both are present.
+		//
+		// Here we fragment the payload into 3 pieces to simulate MTU constraints. Each
+		// fragment will be ~30 bytes of the original payload.
 		defragtest.WithFragments(3),
 		// You may set the timestamp as part of the gopacket.CaptureInfo of each packet.
 		defragtest.WithCaptureTimestamp(time.Date(2006, 5, 4, 3, 2, 1, 0, time.UTC)),
 		// In most production scenarios, fragments don't just appear to standalone,
 		// rather as a payload of another protocol that supports fragmentation of its
 		// user data. To better mimic those scenarios, the package allows users to
-		// specify several layers that transport each fragment.
+		// specify several layers that carry each fragment.
 		defragtest.WithLayers(
 			// This is just a typical Ethernet packet.
 			&layers.Ethernet{
-				SrcMAC:       net.HardwareAddr{1, 1, 1, 1, 1, 1},
-				DstMAC:       net.HardwareAddr{2, 2, 2, 2, 2, 2},
+				SrcMAC:       net.HardwareAddr{0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff},
+				DstMAC:       net.HardwareAddr{0x11, 0x22, 0x33, 0x44, 0x55, 0x66},
 				EthernetType: layers.EthernetTypeIPv4,
 				Length:       0, // Don't worry about lengths in the base layers, gopacket fixes those automatically.
 			},
-			// This is just a typical IPv4 packet.
-			&layers.IPv4{
-				Version:    4,
-				IHL:        5,
-				TTL:        15,
-				SrcIP:      net.IPv4(3, 3, 3, 3),
-				DstIP:      net.IPv4(4, 4, 4, 4),
-				Id:         0xcc,
-				FragOffset: 0,
-				Flags:      layers.IPv4MoreFragments,
-				Checksum:   0, // Don't worry about checksums in the base layers, gopacket fixes those automatically.
-			},
 		),
 		// Sometimes packets arrive in a different order than expected. This package
-		// comes with several orders. Note that we chose an API that prevents users from
-		// providing their own order functions.
+		// comes with several orders to thoroughly test defragmentation mechanisms. Note
+		// that we chose an API that prevents users from providing their own order
+		// functions.
 		defragtest.WithOrder(defragtest.ShuffleOrder),
 	)
 	if err != nil {
@@ -79,77 +77,108 @@ func Example() {
 
 	// Output:
 	// Captured packet at 2006-05-04 03:02:01 +0000 UTC
-	// -- FULL PACKET DATA (60 bytes) ------------------------------------
-	// 00000000  02 02 02 02 02 02 01 01  01 01 01 01 08 00 45 00  |..............E.|
-	// 00000010  00 21 00 cc 20 00 0f 00  7d 04 03 03 03 03 04 04  |.!.. ...}.......|
-	// 00000020  04 04 20 49 20 61 6d 20  61 20 6c 61 72 67 65 00  |.. I am a large.|
-	// 00000030  00 00 00 00 00 00 00 00  00 00 00 00              |............|
+	// -- FULL PACKET DATA (62 bytes) ------------------------------------
+	// 00000000  11 22 33 44 55 66 aa bb  cc dd ee ff 08 00 45 00  |."3DUf........E.|
+	// 00000010  00 30 00 07 20 03 06 11  80 b1 0a 00 00 01 0a 00  |.0.. ...........|
+	// 00000020  00 02 20 65 78 63 65 65  64 73 20 74 68 65 20 4d  |.. exceeds the M|
+	// 00000030  54 55 20 61 6e 64 20 6d  75 73 74 20 62 65        |TU and must be|
 	// --- Layer 1 ---
-	// Ethernet	{Contents=[..14..] Payload=[..46..] SrcMAC=01:01:01:01:01:01 DstMAC=02:02:02:02:02:02 EthernetType=IPv4 Length=0}
-	// 00000000  02 02 02 02 02 02 01 01  01 01 01 01 08 00        |..............|
+	// Ethernet	{Contents=[..14..] Payload=[..48..] SrcMAC=aa:bb:cc:dd:ee:ff DstMAC=11:22:33:44:55:66 EthernetType=IPv4 Length=0}
+	// 00000000  11 22 33 44 55 66 aa bb  cc dd ee ff 08 00        |."3DUf........|
 	// --- Layer 2 ---
-	// IPv4	{Contents=[..20..] Payload=[..13..] Version=4 IHL=5 TOS=0 Length=33 Id=204 Flags=MF FragOffset=0 TTL=15 Protocol=IPv6HopByHop Checksum=32004 SrcIP=3.3.3.3 DstIP=4.4.4.4 Options=[] Padding=[]}
-	// 00000000  45 00 00 21 00 cc 20 00  0f 00 7d 04 03 03 03 03  |E..!.. ...}.....|
-	// 00000010  04 04 04 04                                       |....|
+	// IPv4	{Contents=[..20..] Payload=[..28..] Version=4 IHL=5 TOS=0 Length=48 Id=7 Flags=MF FragOffset=3 TTL=6 Protocol=UDP Checksum=32945 SrcIP=10.0.0.1 DstIP=10.0.0.2 Options=[] Padding=[]}
+	// 00000000  45 00 00 30 00 07 20 03  06 11 80 b1 0a 00 00 01  |E..0.. .........|
+	// 00000010  0a 00 00 02                                       |....|
 	// --- Layer 3 ---
-	// Fragment	13 byte(s)
-	// 00000000  20 49 20 61 6d 20 61 20  6c 61 72 67 65           | I am a large|
+	// Fragment	28 byte(s)
+	// 00000000  20 65 78 63 65 65 64 73  20 74 68 65 20 4d 54 55  | exceeds the MTU|
+	// 00000010  20 61 6e 64 20 6d 75 73  74 20 62 65              | and must be|
 	//
 	// Captured packet at 2006-05-04 03:02:01 +0000 UTC
-	// -- FULL PACKET DATA (60 bytes) ------------------------------------
-	// 00000000  02 02 02 02 02 02 01 01  01 01 01 01 08 00 45 00  |..............E.|
-	// 00000010  00 21 00 cc 20 00 0f 00  7d 04 03 03 03 03 04 04  |.!.. ...}.......|
-	// 00000020  04 04 48 65 6c 6c 6f 2c  20 77 6f 72 6c 64 21 00  |..Hello, world!.|
-	// 00000030  00 00 00 00 00 00 00 00  00 00 00 00              |............|
+	// -- FULL PACKET DATA (62 bytes) ------------------------------------
+	// 00000000  11 22 33 44 55 66 aa bb  cc dd ee ff 08 00 45 00  |."3DUf........E.|
+	// 00000010  00 30 00 07 20 00 06 11  80 b4 0a 00 00 01 0a 00  |.0.. ...........|
+	// 00000020  00 02 54 68 69 73 20 69  73 20 61 20 6c 61 72 67  |..This is a larg|
+	// 00000030  65 20 70 61 79 6c 6f 61  64 20 74 68 61 74        |e payload that|
 	// --- Layer 1 ---
-	// Ethernet	{Contents=[..14..] Payload=[..46..] SrcMAC=01:01:01:01:01:01 DstMAC=02:02:02:02:02:02 EthernetType=IPv4 Length=0}
-	// 00000000  02 02 02 02 02 02 01 01  01 01 01 01 08 00        |..............|
+	// Ethernet	{Contents=[..14..] Payload=[..48..] SrcMAC=aa:bb:cc:dd:ee:ff DstMAC=11:22:33:44:55:66 EthernetType=IPv4 Length=0}
+	// 00000000  11 22 33 44 55 66 aa bb  cc dd ee ff 08 00        |."3DUf........|
 	// --- Layer 2 ---
-	// IPv4	{Contents=[..20..] Payload=[..13..] Version=4 IHL=5 TOS=0 Length=33 Id=204 Flags=MF FragOffset=0 TTL=15 Protocol=IPv6HopByHop Checksum=32004 SrcIP=3.3.3.3 DstIP=4.4.4.4 Options=[] Padding=[]}
-	// 00000000  45 00 00 21 00 cc 20 00  0f 00 7d 04 03 03 03 03  |E..!.. ...}.....|
-	// 00000010  04 04 04 04                                       |....|
+	// IPv4	{Contents=[..20..] Payload=[..28..] Version=4 IHL=5 TOS=0 Length=48 Id=7 Flags=MF FragOffset=0 TTL=6 Protocol=UDP Checksum=32948 SrcIP=10.0.0.1 DstIP=10.0.0.2 Options=[] Padding=[]}
+	// 00000000  45 00 00 30 00 07 20 00  06 11 80 b4 0a 00 00 01  |E..0.. .........|
+	// 00000010  0a 00 00 02                                       |....|
 	// --- Layer 3 ---
-	// Fragment	13 byte(s)
-	// 00000000  48 65 6c 6c 6f 2c 20 77  6f 72 6c 64 21           |Hello, world!|
+	// Fragment	28 byte(s)
+	// 00000000  54 68 69 73 20 69 73 20  61 20 6c 61 72 67 65 20  |This is a large |
+	// 00000010  70 61 79 6c 6f 61 64 20  74 68 61 74              |payload that|
 	//
 	// Captured packet at 2006-05-04 03:02:01 +0000 UTC
-	// -- FULL PACKET DATA (60 bytes) ------------------------------------
-	// 00000000  02 02 02 02 02 02 01 01  01 01 01 01 08 00 45 00  |..............E.|
-	// 00000010  00 1f 00 cc 20 00 0f 00  7d 06 03 03 03 03 04 04  |.... ...}.......|
-	// 00000020  04 04 20 6d 65 73 73 61  67 65 2e 2e 2e 00 00 00  |.. message......|
-	// 00000030  00 00 00 00 00 00 00 00  00 00 00 00              |............|
+	// -- FULL PACKET DATA (61 bytes) ------------------------------------
+	// 00000000  11 22 33 44 55 66 aa bb  cc dd ee ff 08 00 45 00  |."3DUf........E.|
+	// 00000010  00 2f 00 07 00 06 06 11  a0 af 0a 00 00 01 0a 00  |./..............|
+	// 00000020  00 02 20 66 72 61 67 6d  65 6e 74 65 64 20 61 74  |.. fragmented at|
+	// 00000030  20 74 68 65 20 49 50 20  6c 61 79 65 72           | the IP layer|
 	// --- Layer 1 ---
-	// Ethernet	{Contents=[..14..] Payload=[..46..] SrcMAC=01:01:01:01:01:01 DstMAC=02:02:02:02:02:02 EthernetType=IPv4 Length=0}
-	// 00000000  02 02 02 02 02 02 01 01  01 01 01 01 08 00        |..............|
+	// Ethernet	{Contents=[..14..] Payload=[..47..] SrcMAC=aa:bb:cc:dd:ee:ff DstMAC=11:22:33:44:55:66 EthernetType=IPv4 Length=0}
+	// 00000000  11 22 33 44 55 66 aa bb  cc dd ee ff 08 00        |."3DUf........|
 	// --- Layer 2 ---
-	// IPv4	{Contents=[..20..] Payload=[..11..] Version=4 IHL=5 TOS=0 Length=31 Id=204 Flags=MF FragOffset=0 TTL=15 Protocol=IPv6HopByHop Checksum=32006 SrcIP=3.3.3.3 DstIP=4.4.4.4 Options=[] Padding=[]}
-	// 00000000  45 00 00 1f 00 cc 20 00  0f 00 7d 06 03 03 03 03  |E..... ...}.....|
-	// 00000010  04 04 04 04                                       |....|
+	// IPv4	{Contents=[..20..] Payload=[..27..] Version=4 IHL=5 TOS=0 Length=47 Id=7 Flags= FragOffset=6 TTL=6 Protocol=UDP Checksum=41135 SrcIP=10.0.0.1 DstIP=10.0.0.2 Options=[] Padding=[]}
+	// 00000000  45 00 00 2f 00 07 00 06  06 11 a0 af 0a 00 00 01  |E../............|
+	// 00000010  0a 00 00 02                                       |....|
 	// --- Layer 3 ---
-	// Fragment	11 byte(s)
-	// 00000000  20 6d 65 73 73 61 67 65  2e 2e 2e                 | message...|
+	// Fragment	27 byte(s)
+	// 00000000  20 66 72 61 67 6d 65 6e  74 65 64 20 61 74 20 74  | fragmented at t|
+	// 00000010  68 65 20 49 50 20 6c 61  79 65 72                 |he IP layer|
 }
 
-// RenderGenericFragment is an example implementation of a simple template
-// function that wraps payloads in a generic gopacket.Fragment layer.
+// RenderIPv4Fragment demonstrates how to properly handle IPv4 fragmentation. It
+// creates an IPv4 layer with the correct fragment offset and flags based on the
+// fragment's position in the sequence.
 //
-// In real-world implementations, you would typically:
-//   - Use index to set fragment-specific fields (e.g. fragment offset).
-//   - Use total to determine if this is the last fragment (e.g. to clear a "more fragments" flag).
-//   - Create protocol-specific layers instead of generic Fragment.
-//   - Handle fragmentation headers or other protocol requirements.
+// This example shows the pattern for protocol-specific fragmentation:
+//   - First fragment (index 0): Contains the original protocol header (this time: UDP)
+//     with FragOffset=0 and the More Fragments flag set.
+//   - Middle fragments: Have appropriate FragOffset values and MF flag set.
+//   - Last fragment (index == total-1): Has FragOffset set but MF flag cleared.
 //
-// For example, an SCTP template might set BeginFragment and
-// EndFragment flags based on whether this is the first or last fragment in the
-// sequence.
-func RenderGenericFragment(payload []byte, index, total int) (gopacket.SerializableLayer, error) {
-	// In a real implementation, these would be used to configure the fragment.
-	//
-	// For example, the opening fragment is denoted by (index == 0) and the closing
-	// fragment is denoted by (index == total-1).
-	_ = index // Fragment position in sequence (0-based).
-	_ = total // Total number of fragments.
+// Similar patterns apply to other protocols:
+//   - SCTP: Would set BeginFragment and EndFragment flags in the DATA chunk.
+//   - IPv6: Would add a Fragment Extension Header with offset and M flag.
+//   - Custom protocols: Would include their own fragmentation metadata.
+func RenderIPv4Fragment(payload []byte, index, total int) ([]gopacket.SerializableLayer, error) {
+	// Create IPv4 layer with common fields.
+	ipv4 := &layers.IPv4{
+		Version:  4,
+		IHL:      5,
+		TTL:      6,
+		Id:       7,                    // Same ID for all fragments of this packet.
+		Protocol: layers.IPProtocolUDP, // Assume we're fragmenting UDP.
+		SrcIP:    net.IPv4(10, 0, 0, 1),
+		DstIP:    net.IPv4(10, 0, 0, 2),
+		Checksum: 0, // Don't worry about checksums in the base layers, gopacket fixes those automatically.
+	}
 
+	// Calculate fragment offset in 8-byte units. In a real implementation, you'd
+	// track actual byte offsets.
+	fragmentSize := len(payload)
+	offset := uint16(index * fragmentSize / 8)
+
+	if index == 0 {
+		// First fragment: offset 0, more fragments coming.
+		ipv4.FragOffset = 0
+		ipv4.Flags = layers.IPv4MoreFragments
+	} else if index == total-1 {
+		// Last fragment: has offset, no more fragments.
+		ipv4.FragOffset = offset
+		ipv4.Flags = 0
+	} else {
+		// Middle fragment: has offset, more fragments coming.
+		ipv4.FragOffset = offset
+		ipv4.Flags = layers.IPv4MoreFragments
+	}
+
+	// Return both the IPv4 layer and a Fragment layer with the payload This
+	// demonstrates how templates can return multiple layers.
 	frag := gopacket.Fragment(payload)
-	return &frag, nil
+	return []gopacket.SerializableLayer{ipv4, &frag}, nil
 }

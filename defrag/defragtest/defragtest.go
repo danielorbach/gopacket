@@ -41,7 +41,7 @@ func FragmentBytes(buf []byte, fragments int) iter.Seq[[]byte] {
 	return slices.Chunk(buf, bucket)
 }
 
-// A Template transforms a fragment payload into a protocol-specific layer that
+// A Template transforms a fragment payload into protocol-specific layers that
 // can be serialized into a packet.
 //
 // The [DataSource] function uses a Template to render appropriate layers for
@@ -49,14 +49,21 @@ func FragmentBytes(buf []byte, fragments int) iter.Seq[[]byte] {
 // layers.IPv4 instances with appropriate fragmentation flags, while an SCTP
 // template might create layers.SCTPData chunks with begin/end fragment
 // indicators.
+//
+// Returning multiple layers provides flexibility for protocols that require
+// additional encapsulation or metadata layers alongside the fragment data.
+// For instance, some protocols might need to include both a control layer
+// with fragmentation metadata and a separate data layer containing the actual
+// payload. This design allows templates to accurately represent complex
+// protocol structures without forcing artificial layer consolidation.
 type Template interface {
-	// RenderFragment return the protocol-specific layer containing the given
+	// RenderFragment return the protocol-specific layers containing the given
 	// fragmented payload.
 	//
 	// The index parameter indicates this fragment's position (0-based) within the
 	// sequence, and total specifies the total number of fragments. Implementations
 	// should return an error if the fragment cannot be rendered.
-	RenderFragment(payload []byte, index, total int) (gopacket.SerializableLayer, error)
+	RenderFragment(payload []byte, index, total int) ([]gopacket.SerializableLayer, error)
 }
 
 // TemplateFunc is an adapter to allow the use of ordinary functions as
@@ -64,9 +71,9 @@ type Template interface {
 //
 // If f is a function with the appropriate signature, TemplateFunc(f) is a
 // [Template] that calls f.
-type TemplateFunc func(payload []byte, index, total int) (gopacket.SerializableLayer, error)
+type TemplateFunc func(payload []byte, index, total int) ([]gopacket.SerializableLayer, error)
 
 // RenderFragment calls f(payload, index, total).
-func (f TemplateFunc) RenderFragment(payload []byte, index, total int) (gopacket.SerializableLayer, error) {
+func (f TemplateFunc) RenderFragment(payload []byte, index, total int) ([]gopacket.SerializableLayer, error) {
 	return f(payload, index, total)
 }

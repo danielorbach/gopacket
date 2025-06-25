@@ -11,11 +11,11 @@ import (
 
 // DataSource creates a synthetic packet data source that splits the given data
 // into multiple fragments, each wrapped in a packet. The template parameter
-// determines how each fragment payload is rendered into a serializable layer.
+// determines how each fragment payload is rendered into serializable layers.
 //
 // The returned PacketDataSource yields packets containing the fragmented data,
 // with each packet consisting of any base layers specified via [WithLayers]
-// followed by the fragment layer rendered by the [Template].
+// followed by the fragment layers rendered by the [Template].
 //
 // Either [WithFragments] or [WithMaxFragmentSize] must be specified in the
 // options to control how the data is split. These options are mutually
@@ -224,7 +224,7 @@ func WithCaptureTimestamp(timestamp time.Time) Option {
 type fragmentDataSource struct {
 	Template
 	Fragments [][]byte
-	Cursor    int // Initialised to -1.
+	Cursor    int // Initialized to -1.
 
 	Order            Order
 	BaseLayers       []gopacket.SerializableLayer
@@ -234,23 +234,23 @@ type fragmentDataSource struct {
 // ReadPacketData returns the next fragment wrapped in a packet according to the
 // configured options. When all fragments have been read, it returns io.EOF.
 func (ds *fragmentDataSource) ReadPacketData() ([]byte, gopacket.CaptureInfo, error) {
-	ds.Cursor++ // Fine because Cursor is initialised to -1.
+	ds.Cursor++ // Fine because Cursor is initialized to -1.
 	if ds.Cursor >= len(ds.Fragments) {
 		return nil, gopacket.CaptureInfo{}, io.EOF
 	}
 
 	// Each packet contains a single fragment of the entire data, carried by the
-	// user-defined layer.
+	// user-defined layers.
 	position := ds.Order.Transform(ds.Cursor, len(ds.Fragments))
 	payload := ds.Fragments[position]
-	frag, err := ds.RenderFragment(payload, position, len(ds.Fragments))
+	frags, err := ds.RenderFragment(payload, position, len(ds.Fragments))
 	if err != nil {
 		return nil, gopacket.CaptureInfo{}, fmt.Errorf("fragment layer: %w", err)
 	}
-	// The user-defined base layers are prepended before the fragment's layer.
-	layers := append(ds.BaseLayers, frag)
+	// The user-defined base layers are prepended before the fragment's layers.
+	layers := append(ds.BaseLayers, frags...)
 
-	// We serialise the fragment's layer, along with any base layers provided by the
+	// We serialize the fragment's layers, along with any base layers provided by the
 	// user, to generate the appropriate bytes for each packet.
 	buf := gopacket.NewSerializeBuffer()
 	opts := gopacket.SerializeOptions{FixLengths: true, ComputeChecksums: true}
