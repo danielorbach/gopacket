@@ -60,10 +60,14 @@ type Template interface {
 	// RenderFragment return the protocol-specific layers containing the given
 	// fragmented payload.
 	//
-	// The index parameter indicates this fragment's position (0-based) within the
-	// sequence, and total specifies the total number of fragments. Implementations
-	// should return an error if the fragment cannot be rendered.
-	RenderFragment(payload []byte, index, total int) ([]gopacket.SerializableLayer, error)
+	// The position parameter indicates this fragment's position (0-based) within the
+	// sequence, totalFragments specifies the total number of fragments.
+	//
+	// The offset parameter indicates the byte offset of this fragment within the
+	// original data, and totalBytes is the size of the complete unfragmented data.
+	//
+	// Implementations should return an error if the fragment cannot be rendered.
+	RenderFragment(payload []byte, position, totalFragments, offset, totalBytes int) ([]gopacket.SerializableLayer, error)
 }
 
 // TemplateFunc is an adapter to allow the use of ordinary functions as
@@ -71,9 +75,9 @@ type Template interface {
 //
 // If f is a function with the appropriate signature, TemplateFunc(f) is a
 // [Template] that calls f.
-type TemplateFunc func(payload []byte, index, total int) ([]gopacket.SerializableLayer, error)
+type TemplateFunc func(payload []byte, position, totalFragments, offset, totalBytes int) ([]gopacket.SerializableLayer, error)
 
-// RenderFragment calls f(payload, index, total).
-func (f TemplateFunc) RenderFragment(payload []byte, index, total int) ([]gopacket.SerializableLayer, error) {
-	return f(payload, index, total)
+// RenderFragment calls f(payload, position, totalFragments, offset, totalBytes).
+func (f TemplateFunc) RenderFragment(payload []byte, position, totalFragments, offset, totalBytes int) ([]gopacket.SerializableLayer, error) {
+	return f(payload, position, totalFragments, offset, totalBytes)
 }

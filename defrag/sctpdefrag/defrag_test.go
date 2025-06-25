@@ -247,13 +247,13 @@ func TestOutOfOrderChunks(t *testing.T) {
 	}
 }
 
-func renderSCTPDataChunk(payload []byte, index, total int) ([]gopacket.SerializableLayer, error) {
+func renderSCTPDataChunk(payload []byte, position, totalFragments, _, _ int) ([]gopacket.SerializableLayer, error) {
 	const baseTSN = 0x12345678
 	chunk := &layers.SCTPData{
 		Unordered:       false,
-		BeginFragment:   index == 0,              // Set the B flag when appropriate.
-		EndFragment:     index == total-1,        // Set the E flag when appropriate.
-		TSN:             uint32(baseTSN + index), // Increment TSN for each chunk.
+		BeginFragment:   position == 0,                // Set the B flag when appropriate.
+		EndFragment:     position == totalFragments-1, // Set the E flag when appropriate.
+		TSN:             uint32(baseTSN + position),   // Increment TSN for each chunk.
 		StreamId:        1,
 		StreamSequence:  2,
 		PayloadProtocol: layers.SCTPProtocolReserved, // Use the reserved protocol for this test.

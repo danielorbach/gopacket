@@ -231,6 +231,24 @@ type fragmentDataSource struct {
 	CaptureTimestamp time.Time
 }
 
+// PositionOffset returns the byte offset of the fragment at the given position.
+func (ds *fragmentDataSource) positionOffset(position int) int {
+	offset := 0
+	for i := 0; i < position; i++ {
+		offset += len(ds.Fragments[i])
+	}
+	return offset
+}
+
+// TotalBytes returns the total size of all fragments combined.
+func (ds *fragmentDataSource) totalBytes() int {
+	totalBytes := 0
+	for _, frag := range ds.Fragments {
+		totalBytes += len(frag)
+	}
+	return totalBytes
+}
+
 // ReadPacketData returns the next fragment wrapped in a packet according to the
 // configured options. When all fragments have been read, it returns io.EOF.
 func (ds *fragmentDataSource) ReadPacketData() ([]byte, gopacket.CaptureInfo, error) {
@@ -243,7 +261,9 @@ func (ds *fragmentDataSource) ReadPacketData() ([]byte, gopacket.CaptureInfo, er
 	// user-defined layers.
 	position := ds.Order.Transform(ds.Cursor, len(ds.Fragments))
 	payload := ds.Fragments[position]
-	frags, err := ds.RenderFragment(payload, position, len(ds.Fragments))
+	offset := ds.positionOffset(position)
+	totalBytes := ds.totalBytes()
+	frags, err := ds.RenderFragment(payload, position, len(ds.Fragments), offset, totalBytes)
 	if err != nil {
 		return nil, gopacket.CaptureInfo{}, fmt.Errorf("fragment layer: %w", err)
 	}

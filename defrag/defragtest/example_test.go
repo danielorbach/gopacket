@@ -115,15 +115,15 @@ func Example() {
 	// Captured packet at 2006-05-04 03:02:01 +0000 UTC
 	// -- FULL PACKET DATA (61 bytes) ------------------------------------
 	// 00000000  11 22 33 44 55 66 aa bb  cc dd ee ff 08 00 45 00  |."3DUf........E.|
-	// 00000010  00 2f 00 07 00 06 06 11  a0 af 0a 00 00 01 0a 00  |./..............|
+	// 00000010  00 2f 00 07 00 07 06 11  a0 ae 0a 00 00 01 0a 00  |./..............|
 	// 00000020  00 02 20 66 72 61 67 6d  65 6e 74 65 64 20 61 74  |.. fragmented at|
 	// 00000030  20 74 68 65 20 49 50 20  6c 61 79 65 72           | the IP layer|
 	// --- Layer 1 ---
 	// Ethernet	{Contents=[..14..] Payload=[..47..] SrcMAC=aa:bb:cc:dd:ee:ff DstMAC=11:22:33:44:55:66 EthernetType=IPv4 Length=0}
 	// 00000000  11 22 33 44 55 66 aa bb  cc dd ee ff 08 00        |."3DUf........|
 	// --- Layer 2 ---
-	// IPv4	{Contents=[..20..] Payload=[..27..] Version=4 IHL=5 TOS=0 Length=47 Id=7 Flags= FragOffset=6 TTL=6 Protocol=UDP Checksum=41135 SrcIP=10.0.0.1 DstIP=10.0.0.2 Options=[] Padding=[]}
-	// 00000000  45 00 00 2f 00 07 00 06  06 11 a0 af 0a 00 00 01  |E../............|
+	// IPv4	{Contents=[..20..] Payload=[..27..] Version=4 IHL=5 TOS=0 Length=47 Id=7 Flags= FragOffset=7 TTL=6 Protocol=UDP Checksum=41134 SrcIP=10.0.0.1 DstIP=10.0.0.2 Options=[] Padding=[]}
+	// 00000000  45 00 00 2f 00 07 00 07  06 11 a0 ae 0a 00 00 01  |E../............|
 	// 00000010  0a 00 00 02                                       |....|
 	// --- Layer 3 ---
 	// Fragment	27 byte(s)
@@ -145,8 +145,9 @@ func Example() {
 //   - SCTP: Would set BeginFragment and EndFragment flags in the DATA chunk.
 //   - IPv6: Would add a Fragment Extension Header with offset and M flag.
 //   - Custom protocols: Would include their own fragmentation metadata.
-func RenderIPv4Fragment(payload []byte, index, total int) ([]gopacket.SerializableLayer, error) {
-	// Create IPv4 layer with common fields.
+func RenderIPv4Fragment(payload []byte, position, totalFragments, offset, totalBytes int) ([]gopacket.SerializableLayer, error) {
+	_ = totalBytes // Unused in this protocol.
+	// Create an IPv4 layer with common fields.
 	ipv4 := &layers.IPv4{
 		Version:  4,
 		IHL:      5,
@@ -158,22 +159,23 @@ func RenderIPv4Fragment(payload []byte, index, total int) ([]gopacket.Serializab
 		Checksum: 0, // Don't worry about checksums in the base layers, gopacket fixes those automatically.
 	}
 
-	// Calculate fragment offset in 8-byte units. In a real implementation, you'd
-	// track actual byte offsets.
-	fragmentSize := len(payload)
-	offset := uint16(index * fragmentSize / 8)
+	// Convert byte offset to 8-byte units as required by IPv4.
+	//
+	// Note that this value is not necessarily accurate because this package does not
+	// guarantee that fragments are filled to 8-byte boundaries.
+	fragmentOffset := uint16(offset / 8)
 
-	if index == 0 {
+	if position == 0 {
 		// First fragment: offset 0, more fragments coming.
 		ipv4.FragOffset = 0
 		ipv4.Flags = layers.IPv4MoreFragments
-	} else if index == total-1 {
+	} else if position == totalFragments-1 {
 		// Last fragment: has offset, no more fragments.
-		ipv4.FragOffset = offset
+		ipv4.FragOffset = fragmentOffset
 		ipv4.Flags = 0
 	} else {
 		// Middle fragment: has offset, more fragments coming.
-		ipv4.FragOffset = offset
+		ipv4.FragOffset = fragmentOffset
 		ipv4.Flags = layers.IPv4MoreFragments
 	}
 

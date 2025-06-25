@@ -49,9 +49,11 @@ func TestPacketOrdering(t *testing.T) {
 // RenderGenericFragment is a simple template function used in tests. It wraps
 // payloads in a generic gopacket.Fragment layer without any protocol-specific
 // fragmentation logic.
-func RenderGenericFragment(payload []byte, index, total int) ([]gopacket.SerializableLayer, error) {
-	_ = index // Unused in this minima implementation.
-	_ = total // Unused in this minima implementation.
+func RenderGenericFragment(payload []byte, position, totalFragments, offset, totalBytes int) ([]gopacket.SerializableLayer, error) {
+	_ = position       // Unused in this minimal implementation.
+	_ = totalFragments // Unused in this minimal implementation.
+	_ = offset         // Unused in this minimal implementation.
+	_ = totalBytes     // Unused in this minimal implementation.
 	frag := gopacket.Fragment(payload)
 	return []gopacket.SerializableLayer{&frag}, nil
 }
