@@ -264,7 +264,7 @@ func (d *Defragmenter) loggerForChunk(assoc Association, data *layers.SCTPData) 
 			slog.Any("assoc", assoc),
 			slog.Int("sid", int(data.StreamId)),
 			slog.Int("ssn", int(data.StreamSequence)),
-			slog.Uint64("tsn", uint64(data.TSN)),
+			slog.String("tsn", fmt.Sprintf("%#08x", data.TSN)),
 			slog.Int("length", len(data.UserData)),
 			slog.Group("flags",
 				slog.Bool("begin", data.BeginFragment),
@@ -367,7 +367,17 @@ func (a Association) String() string {
 }
 
 func (a Association) LogValue() slog.Value {
-	peers := fmt.Sprintf("%s:%d->%s:%d", a.Addresses.Src().String(), a.Ports.Src(), a.Addresses.Dst().String(), a.Ports.Dst())
+	var srcIP, dstIP string
+	if a.Addresses.EndpointType() != gopacket.EndpointInvalid {
+		srcIP = a.Addresses.Src().String()
+		dstIP = a.Addresses.Dst().String()
+	}
+	var srcPort, dstPort string
+	if a.Ports.EndpointType() != gopacket.EndpointInvalid {
+		srcPort = a.Ports.Src().String()
+		dstPort = a.Ports.Dst().String()
+	}
+	peers := fmt.Sprintf("%v:%v->%v:%v", srcIP, srcPort, dstIP, dstPort)
 	return slog.GroupValue(
 		slog.String("peers", peers),
 		slog.String("tag", strconv.FormatUint(uint64(a.VerificationTag), 10)),
@@ -541,7 +551,7 @@ func (m *messageContext) LogValue() slog.Value {
 		slog.Int("stream_id", int(m.StreamId)),
 		slog.Int("stream_sequence", int(m.StreamSequence)),
 		slog.String("payload_protocol", m.PayloadProtocol.String()),
-		slog.Any("fragments", m.Fragments),
+		slog.Any("fragments", &m.Fragments),
 	)
 }
 
@@ -741,9 +751,15 @@ func (l *fragmentList) deltaTSN(left, right uint32) int64 {
 func (l *fragmentList) LogValue() slog.Value {
 	return slog.GroupValue(
 		slog.Int("totalBytes", l.TotalBytes()),
-		slog.Bool("beginFragment", l.BeginFragment),
-		slog.Uint64("beginTSN", uint64(l.BeginTSN)),
-		slog.Any("chunks", len(l.List)),
+		slog.Any("totalFragments", len(l.List)),
+		slog.Group("begin",
+			slog.Bool("found", l.BeginFragment),
+			slog.Uint64("tsn", uint64(l.BeginTSN)),
+		),
+		slog.Group("end",
+			slog.Bool("found", l.EndFragment),
+			slog.Uint64("tsn", uint64(l.EndTSN)),
+		),
 	)
 }
 

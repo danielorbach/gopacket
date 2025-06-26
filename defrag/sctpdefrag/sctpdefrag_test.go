@@ -4,7 +4,9 @@ import (
 	"bytes"
 	_ "embed"
 	"io"
+	"log/slog"
 	"net"
+	"strings"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
@@ -35,9 +37,9 @@ func TestDecoderDefragmentation(t *testing.T) {
 		t.Errorf("Reassembly produced the wrong message (BASH-colorized diff, got->want):\n%v\n---PACKET (reassembled)---\n%v", bytediff.BashOutput.String(diff), gopacket.LayerDump(reassembled))
 	}
 
-	// And that the synthetic layer is a valid SCTP DATA chunk that can be serialised
-	// correctly. We achieve that by serialising the synthetic layer, then decoding a
-	// DATA chunk back from the serialised buffer.
+	// And that the synthetic layer is a valid SCTP DATA chunk that can be serialized
+	// correctly. We achieve that by serializing the synthetic layer, then decoding a
+	// DATA chunk back from the serialized buffer.
 	testSerDes(t, reassembled)
 }
 
@@ -49,7 +51,7 @@ func defragWithDecoder(t *testing.T, dataSource gopacket.PacketDataSource, decod
 
 	// Defragmentation is as easy as iterating over the packets in the source and
 	// calling DefragData on each one.
-	defrag := sctpdefrag.NewDefragmenter()
+	defrag := sctpdefrag.NewDefragmenter(sctpdefrag.WithLogger(testLogger(t)))
 	for p := range source.Packets() {
 		// We safely type-assert here because we know the content of the PCAP in advance.
 		// Any panics indicate the PCAP has changed while the test did not.
@@ -112,7 +114,7 @@ func TestDecodingLayerDefragmentation(t *testing.T) {
 	// Defragmentation is as easy as iterating over the packets in the source and
 	// calling DefragData on each one.
 	var reassembled *layers.SCTPData
-	defrag := sctpdefrag.NewDefragmenter()
+	defrag := sctpdefrag.NewDefragmenter(sctpdefrag.WithLogger(testLogger(t)))
 	for {
 		packetData, _, err := dataSource.ReadPacketData()
 		if err == io.EOF {
@@ -305,3 +307,18 @@ func baseLayersForAssociation(srcIP, dstIP net.IP, srdPort, dstPort int, tag uin
 // TODO: test retransmission (duplicate chunks).
 
 // TODO: test TSN wraparound (e.g. TSN=0xFFFFFFFF, TSN=0x00000000).
+
+func testLogger(t *testing.T, level slog.Level) *slog.Logger {
+	w := (*testWriter)(t)
+	h := slog.NewTextHandler(w, &slog.HandlerOptions{Level: slog.LevelDebug})
+	return slog.New(h)
+}
+
+type testWriter testing.T
+
+func (t *testWriter) Write(p []byte) (n int, err error) {
+	s := string(p)
+	s = strings.TrimSpace(s)
+	t.Log(s)
+	return len(p), nil
+}
