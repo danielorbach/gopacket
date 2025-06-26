@@ -9,11 +9,11 @@ import (
 	"github.com/google/gopacket/layers"
 )
 
-func TestIteratingChunks(t *testing.T) {
-	// The test collects all chunks successfully parsed chunks that are bundled
-	// together. According to the comments on the testBundleData packet, the chunk
-	// types are as follows:
-	expected := []gopacket.LayerType{
+func TestUnbundlingChunks(t *testing.T) {
+	// The test collects all successfully parsed chunks that are bundled together.
+	// According to the comments on the testBundleData packet, the chunk types are as
+	// follows:
+	layerTypes := []gopacket.LayerType{
 		layers.LayerTypeSCTPInit,
 		layers.LayerTypeSCTPInitAck,
 		layers.LayerTypeSCTPCookieEcho,
@@ -30,12 +30,12 @@ func TestIteratingChunks(t *testing.T) {
 		layers.LayerTypeSCTPUnknownChunkType,
 	}
 
-	// We collect all chunks because the decoded chunks should serialise back to the
+	// We collect all chunks because the decoded chunks should serialize back to the
 	// original packet data.
 	var chunks []gopacket.SerializableLayer
 	for i, chunk := range Unbundle(testBundleData) {
 		t.Logf("Chunk #%v:\n%v", i, gopacket.LayerDump(chunk))
-		if i >= len(expected) {
+		if i >= len(layerTypes) {
 			t.Errorf("Unexpected chunk #%v = %v", i, chunk.LayerType())
 			continue
 		}
@@ -43,15 +43,15 @@ func TestIteratingChunks(t *testing.T) {
 			t.Errorf("Failed to decode chunk #%v: %v", i, chunk.(gopacket.ErrorLayer).Error())
 			continue
 		}
-		// We only collect SerializableLayers, so we can serialise them later and compare
+		// We only collect SerializableLayers, so we can serialize them later and compare
 		// to the input data.
 		chunks = append(chunks, chunk.(gopacket.SerializableLayer))
-		if chunk.LayerType() != expected[i] {
-			t.Errorf("Chunk #%v = %v, want %v", i, chunk.LayerType(), expected[i])
+		if chunk.LayerType() != layerTypes[i] {
+			t.Errorf("Chunk #%v = %v, want %v", i, chunk.LayerType(), layerTypes[i])
 		}
 	}
 
-	// Once we've collected all chunks, we re-serialise into bytes and compare with
+	// Once we've collected all chunks, we re-serialize into bytes and compare with
 	// the source bytes.
 	buf := gopacket.NewSerializeBuffer()
 	err := gopacket.SerializeLayers(buf, gopacket.SerializeOptions{}, chunks...)
@@ -64,16 +64,11 @@ func TestIteratingChunks(t *testing.T) {
 	}
 }
 
-func TestBundleContainerDecodesChunks(t *testing.T) {
-	var bundle BundleContainer
-	if err := bundle.DecodeFromBytes(testBundleData, gopacket.NilDecodeFeedback); err != nil {
-		t.Fatalf("DecodeFromBytes() failed: %v", err)
-	}
-
-	// The test collects all chunks successfully parsed chunks that are bundled
-	// together. According to the comments on the testBundleData packet, the chunk
-	// types are as follows:
-	expected := []layers.SCTPChunkType{
+func TestDecodingBundleContainer(t *testing.T) {
+	// The test collects all successfully parsed chunks that are bundled together.
+	// According to the comments on the testBundleData packet, the chunk types are as
+	// follows:
+	chunkTypes := []layers.SCTPChunkType{
 		layers.SCTPChunkTypeInit,
 		layers.SCTPChunkTypeInitAck,
 		layers.SCTPChunkTypeCookieEcho,
@@ -90,17 +85,22 @@ func TestBundleContainerDecodesChunks(t *testing.T) {
 		layers.SCTPChunkType(0xff),
 	}
 
-	// We collect all chunks because the decoded chunks should serialise back to the
+	var bundle BundleContainer
+	if err := bundle.DecodeFromBytes(testBundleData, gopacket.NilDecodeFeedback); err != nil {
+		t.Fatalf("DecodeFromBytes() failed: %v", err)
+	}
+
+	// We collect all chunks because the decoded chunks should serialize back to the
 	// original packet data.
 	var buf bytes.Buffer
 	for i, chunk := range bundle.Chunks() {
 		t.Logf("Chunk #%v: %v", i, FormatChunkHeader(chunk))
-		if i >= len(expected) {
+		if i >= len(chunkTypes) {
 			t.Errorf("Unexpected chunk #%v = %v", i, chunk.Type)
 			continue
 		}
-		if chunk.Type != expected[i] {
-			t.Errorf("Chunk #%v = %v, want %v", i, chunk.Type, expected[i])
+		if chunk.Type != chunkTypes[i] {
+			t.Errorf("Chunk #%v = %v, want %v", i, chunk.Type, chunkTypes[i])
 		}
 
 		// We only collect each chunk's content so we can compare to the input data.
@@ -115,11 +115,53 @@ func TestBundleContainerDecodesChunks(t *testing.T) {
 	}
 }
 
+func TestIteratingChunksOfType(t *testing.T) {
+	// Map of chunk types to their expected counts in testBundleData
+	tests := []struct {
+		chunkType layers.SCTPChunkType
+		count     int
+	}{
+		{chunkType: layers.SCTPChunkTypeData, count: 2},
+		{chunkType: layers.SCTPChunkTypeInit, count: 1},
+		{chunkType: layers.SCTPChunkTypeInitAck, count: 1},
+		{chunkType: layers.SCTPChunkTypeSack, count: 2},
+		{chunkType: layers.SCTPChunkTypeHeartbeat, count: 1},
+		{chunkType: layers.SCTPChunkTypeHeartbeatAck, count: 1},
+		{chunkType: layers.SCTPChunkTypeAbort, count: 0},
+		{chunkType: layers.SCTPChunkTypeShutdown, count: 1},
+		{chunkType: layers.SCTPChunkTypeShutdownAck, count: 1},
+		{chunkType: layers.SCTPChunkTypeError, count: 0},
+		{chunkType: layers.SCTPChunkTypeCookieEcho, count: 1},
+		{chunkType: layers.SCTPChunkTypeCookieAck, count: 1},
+		{chunkType: layers.SCTPChunkTypeShutdownComplete, count: 1},
+		{chunkType: layers.SCTPChunkType(0xff), count: 1}, // Unknown chunk type
+		{chunkType: layers.SCTPChunkType(0x42), count: 0}, // Non-existent type
+	}
+
+	var bundle BundleContainer
+	if err := bundle.DecodeFromBytes(testBundleData, gopacket.NilDecodeFeedback); err != nil {
+		t.Fatalf("DecodeFromBytes() failed: %v", err)
+	}
+
+	for _, tt := range tests {
+		var count int
+		for _, chunk := range bundle.ChunksOf(tt.chunkType) {
+			count++
+			if chunk.Type != tt.chunkType {
+				t.Errorf("ChunksOf(%v) yielded %v chunk", tt.chunkType, chunk.Type)
+			}
+		}
+		if count != tt.count {
+			t.Errorf("ChunksOf(%v) = %v chunks, want %v", tt.chunkType, count, tt.count)
+		}
+	}
+}
+
 // This SCTP packet payload contains a predefined byte sequence used for testing
 // how this package handles a valid bundle of chunks, according to the IETF
 // specification.
 //
-// This packet was synthesised by concatenating the payloads of several SCTP
+// This packet was synthesized by concatenating the payloads of several SCTP
 // packets. The payload of each packet is annotated by an opening comment
 // describing the chunks within. All chunks are properly padded.
 var testBundleData = []byte{
@@ -191,49 +233,7 @@ func BenchmarkUnbundle(b *testing.B) {
 	for b.Loop() {
 		for range Unbundle(testBundleData) {
 			// No need to do anything with the chunks because b.Loop disables all
-			// optimisations inside the loop.
-		}
-	}
-}
-
-func TestBundleContainerChunksOf(t *testing.T) {
-	// Map of chunk types to their expected counts in testBundleData
-	tests := []struct {
-		chunkType layers.SCTPChunkType
-		count     int
-	}{
-		{chunkType: layers.SCTPChunkTypeData, count: 2},
-		{chunkType: layers.SCTPChunkTypeInit, count: 1},
-		{chunkType: layers.SCTPChunkTypeInitAck, count: 1},
-		{chunkType: layers.SCTPChunkTypeSack, count: 2},
-		{chunkType: layers.SCTPChunkTypeHeartbeat, count: 1},
-		{chunkType: layers.SCTPChunkTypeHeartbeatAck, count: 1},
-		{chunkType: layers.SCTPChunkTypeAbort, count: 0},
-		{chunkType: layers.SCTPChunkTypeShutdown, count: 1},
-		{chunkType: layers.SCTPChunkTypeShutdownAck, count: 1},
-		{chunkType: layers.SCTPChunkTypeError, count: 0},
-		{chunkType: layers.SCTPChunkTypeCookieEcho, count: 1},
-		{chunkType: layers.SCTPChunkTypeCookieAck, count: 1},
-		{chunkType: layers.SCTPChunkTypeShutdownComplete, count: 1},
-		{chunkType: layers.SCTPChunkType(0xff), count: 1}, // Unknown chunk type
-		{chunkType: layers.SCTPChunkType(0x42), count: 0}, // Non-existent type
-	}
-
-	var bundle BundleContainer
-	if err := bundle.DecodeFromBytes(testBundleData, gopacket.NilDecodeFeedback); err != nil {
-		t.Fatalf("DecodeFromBytes() failed: %v", err)
-	}
-
-	for _, tt := range tests {
-		var count int
-		for _, chunk := range bundle.ChunksOf(tt.chunkType) {
-			count++
-			if chunk.Type != tt.chunkType {
-				t.Errorf("ChunksOf(%v) yielded %v chunk", tt.chunkType, chunk.Type)
-			}
-		}
-		if count != tt.count {
-			t.Errorf("ChunksOf(%v) = %v chunks, want %v", tt.chunkType, count, tt.count)
+			// optimizations inside the loop.
 		}
 	}
 }
