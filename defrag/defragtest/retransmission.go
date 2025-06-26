@@ -24,15 +24,21 @@ type echoPacketDataSource struct {
 	pending bool
 	data    []byte
 	ci      gopacket.CaptureInfo
-	err     error
 }
 
 func (ds *echoPacketDataSource) ReadPacketData() (data []byte, ci gopacket.CaptureInfo, err error) {
-	// If nothing is pending, read from the base data source.
-	if !ds.pending {
-		ds.data, ds.ci, ds.err = ds.base.ReadPacketData()
+	// When pending, return the last read data and clear the pending flag.
+	if ds.pending {
+		ds.pending = false
+		return ds.data, ds.ci, nil
 	}
-	ds.pending = !ds.pending // Toggle.
-	// If we just read data, return it. If we were pending, echo the last call.
-	return ds.data, ds.ci, ds.err
+
+	data, ci, err = ds.base.ReadPacketData()
+	// Errors from the base data source should not be echoed but rather returned
+	// immediately, without toggling the pending state.
+	if err != nil {
+		return data, ci, err
+	}
+	ds.pending = true // Toggle.
+	return ds.data, ds.ci, nil
 }
