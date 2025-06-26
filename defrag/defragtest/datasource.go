@@ -1,6 +1,7 @@
 package defragtest
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"slices"
@@ -8,6 +9,21 @@ import (
 
 	"github.com/google/gopacket"
 )
+
+// A FragmentSource implements gopacket.PacketDataSource to yield fragmented
+// packets in a controlled sequence.
+//
+// Call [DataSource] to create a new FragmentSource instance with the desired
+// options.
+type FragmentSource struct {
+	template  Template
+	fragments [][]byte
+	cursor    int // Initialized to -1.
+
+	order            Order
+	baseLayers       []gopacket.SerializableLayer
+	captureTimestamp time.Time
+}
 
 // DataSource creates a synthetic packet data source that splits the given data
 // into multiple fragments, each wrapped in a packet. The template parameter
@@ -23,7 +39,7 @@ import (
 //
 // This function returns a non-nil error when the given options are invalid or if
 // it detects the given data is incompatible with the given options.
-func DataSource(template Template, data []byte, opts ...Option) (gopacket.PacketDataSource, error) {
+func DataSource(template Template, data []byte, opts ...Option) (*FragmentSource, error) {
 	var opt Options
 	for _, o := range opts {
 		opt = o(opt)
@@ -47,14 +63,88 @@ func DataSource(template Template, data []byte, opts ...Option) (gopacket.Packet
 	if opt.Fragments != 0 {
 		fragments = slices.Collect(FragmentBytes(data, opt.Fragments))
 	}
-	return &fragmentDataSource{
-		Template:         template,
-		Fragments:        fragments,
-		Cursor:           -1,
-		Order:            opt.Order,
-		BaseLayers:       opt.BaseLayers,
-		CaptureTimestamp: opt.CaptureTimestamp,
+	return &FragmentSource{
+		template:         template,
+		fragments:        fragments,
+		cursor:           -1,
+		order:            opt.Order,
+		baseLayers:       opt.BaseLayers,
+		captureTimestamp: opt.CaptureTimestamp,
 	}, nil
+}
+
+// ReadPacketData returns the next fragment wrapped in a packet according to the
+// configured options. When all fragments have been read, it returns io.EOF.
+func (s *FragmentSource) ReadPacketData() ([]byte, gopacket.CaptureInfo, error) {
+	s.cursor++ // Fine because the cursor is initialized to -1.
+	if s.cursor >= len(s.fragments) {
+		return nil, gopacket.CaptureInfo{}, io.EOF
+	}
+
+	// Each packet contains a single fragment of the entire data, carried by the
+	// user-defined layers.
+	data, err := s.ReadFragmentData(s.cursor)
+	if err != nil {
+		return nil, gopacket.CaptureInfo{}, err
+	}
+	ci := gopacket.CaptureInfo{
+		Timestamp:     s.captureTimestamp,
+		Length:        len(data),
+		CaptureLength: len(data),
+	}
+	return data, ci, nil
+}
+
+// ReadFragmentData returns the data for the fragment at the given index,
+// rendered as a byte slice. The index is the logical index of the fragment in
+// the sequence, which is transformed into a sequential position according to the
+// configured order.
+func (s *FragmentSource) ReadFragmentData(index int) (data []byte, err error) {
+	if index < 0 || index >= len(s.fragments) {
+		return nil, errors.New("index out of range")
+	}
+	position := s.order.Transform(index, len(s.fragments))
+	payload := s.fragments[position]
+	offset := s.positionOffset(position)
+	frags, err := s.template.RenderFragment(payload, position, s.TotalFragments(), offset, s.TotalBytes())
+	if err != nil {
+		return nil, fmt.Errorf("fragment layer: %w", err)
+	}
+	// The user-defined base layers are prepended before the fragment's layers.
+	layers := append(s.baseLayers, frags...)
+
+	// We serialize the fragment's layers, along with any base layers provided by the
+	// user, to generate the appropriate bytes for each packet.
+	buf := gopacket.NewSerializeBuffer()
+	opts := gopacket.SerializeOptions{FixLengths: true, ComputeChecksums: true}
+	if err := gopacket.SerializeLayers(buf, opts, layers...); err != nil {
+		return nil, fmt.Errorf("synthesize packet: %w", err)
+	}
+	return buf.Bytes(), nil
+}
+
+// PositionOffset returns the byte offset of the fragment at the given position.
+func (s *FragmentSource) positionOffset(position int) int {
+	offset := 0
+	for i := 0; i < position; i++ {
+		offset += len(s.fragments[i])
+	}
+	return offset
+}
+
+// TotalBytes returns the total size of all fragments combined.
+func (s *FragmentSource) TotalBytes() int {
+	totalBytes := 0
+	for _, frag := range s.fragments {
+		totalBytes += len(frag)
+	}
+	return totalBytes
+}
+
+// TotalFragments returns the total number of fragments that this data source
+// will yield.
+func (s *FragmentSource) TotalFragments() int {
+	return len(s.fragments)
 }
 
 // Option is a function that carried user settings for [DataSource].
@@ -217,71 +307,4 @@ func WithCaptureTimestamp(timestamp time.Time) Option {
 		options.CaptureTimestamp = timestamp
 		return options
 	}
-}
-
-// A fragmentDataSource implements gopacket.PacketDataSource to yield fragmented
-// packets in a controlled sequence.
-type fragmentDataSource struct {
-	Template
-	Fragments [][]byte
-	Cursor    int // Initialized to -1.
-
-	Order            Order
-	BaseLayers       []gopacket.SerializableLayer
-	CaptureTimestamp time.Time
-}
-
-// PositionOffset returns the byte offset of the fragment at the given position.
-func (ds *fragmentDataSource) positionOffset(position int) int {
-	offset := 0
-	for i := 0; i < position; i++ {
-		offset += len(ds.Fragments[i])
-	}
-	return offset
-}
-
-// TotalBytes returns the total size of all fragments combined.
-func (ds *fragmentDataSource) totalBytes() int {
-	totalBytes := 0
-	for _, frag := range ds.Fragments {
-		totalBytes += len(frag)
-	}
-	return totalBytes
-}
-
-// ReadPacketData returns the next fragment wrapped in a packet according to the
-// configured options. When all fragments have been read, it returns io.EOF.
-func (ds *fragmentDataSource) ReadPacketData() ([]byte, gopacket.CaptureInfo, error) {
-	ds.Cursor++ // Fine because Cursor is initialized to -1.
-	if ds.Cursor >= len(ds.Fragments) {
-		return nil, gopacket.CaptureInfo{}, io.EOF
-	}
-
-	// Each packet contains a single fragment of the entire data, carried by the
-	// user-defined layers.
-	position := ds.Order.Transform(ds.Cursor, len(ds.Fragments))
-	payload := ds.Fragments[position]
-	offset := ds.positionOffset(position)
-	totalBytes := ds.totalBytes()
-	frags, err := ds.RenderFragment(payload, position, len(ds.Fragments), offset, totalBytes)
-	if err != nil {
-		return nil, gopacket.CaptureInfo{}, fmt.Errorf("fragment layer: %w", err)
-	}
-	// The user-defined base layers are prepended before the fragment's layers.
-	layers := append(ds.BaseLayers, frags...)
-
-	// We serialize the fragment's layers, along with any base layers provided by the
-	// user, to generate the appropriate bytes for each packet.
-	buf := gopacket.NewSerializeBuffer()
-	opts := gopacket.SerializeOptions{FixLengths: true, ComputeChecksums: true}
-	if err := gopacket.SerializeLayers(buf, opts, layers...); err != nil {
-		return nil, gopacket.CaptureInfo{}, fmt.Errorf("synthesize packet: %w", err)
-	}
-
-	ci := gopacket.CaptureInfo{
-		Timestamp:     ds.CaptureTimestamp,
-		Length:        len(buf.Bytes()),
-		CaptureLength: len(buf.Bytes()),
-	}
-	return buf.Bytes(), ci, nil
 }

@@ -1,29 +1,28 @@
-package defragtest_test
+package defragtest
 
 import (
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/gopacket"
-	"github.com/google/gopacket/defrag/defragtest"
 )
 
 func TestPacketOrdering(t *testing.T) {
 	var data = []byte{1, 2, 3, 4, 5} // Fixed for all test-cases.
 	var tests = []struct {
-		order     defragtest.Order
+		order     Order
 		fragments []gopacket.Fragment
 	}{
 		{
-			order:     defragtest.SequentialOrder,
+			order:     SequentialOrder,
 			fragments: []gopacket.Fragment{{1, 2}, {3, 4}, {5}},
 		},
 		{
-			order:     defragtest.ReverseOrder,
+			order:     ReverseOrder,
 			fragments: []gopacket.Fragment{{5}, {3, 4}, {1, 2}},
 		},
 		{
-			order:     defragtest.ShuffleOrder,
+			order:     ShuffleOrder,
 			fragments: []gopacket.Fragment{{3, 4}, {1, 2}, {5}},
 		},
 	}
@@ -31,12 +30,12 @@ func TestPacketOrdering(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.order.String(), func(t *testing.T) {
 			// Create a synthetic packet data source yielding packets in the desired order.
-			template := defragtest.TemplateFunc(RenderGenericFragment)
-			opts := []defragtest.Option{
-				defragtest.WithOrder(tt.order),
-				defragtest.WithFragments(3), // Fixed for all test-cases.
+			template := TemplateFunc(RenderGenericFragment)
+			opts := []Option{
+				WithOrder(tt.order),
+				WithFragments(3), // Fixed for all test-cases.
 			}
-			dataSource, err := defragtest.DataSource(template, data, opts...)
+			dataSource, err := DataSource(template, data, opts...)
 			if err != nil {
 				t.Fatalf("DataSource() failed: %v", err)
 			}
@@ -62,7 +61,7 @@ func RenderGenericFragment(payload []byte, position, totalFragments, offset, tot
 // fragments in the expected order. It takes []gopacket.Fragment rather than
 // [][]byte because it is designed to work in tandem with the RenderGenericFragment
 // template function.
-func testDataSourceFragments(t *testing.T, dataSource gopacket.PacketDataSource, wantFragments []gopacket.Fragment) {
+func testDataSourceFragments(t *testing.T, dataSource *FragmentSource, wantFragments []gopacket.Fragment) {
 	t.Helper()
 
 	// Collect fragments from the synthetic packet data source.
@@ -76,103 +75,119 @@ func testDataSourceFragments(t *testing.T, dataSource gopacket.PacketDataSource,
 	if diff := cmp.Diff(gotFragments, wantFragments); diff != "" {
 		t.Errorf("Fragments mismatch (-want +got):\n%s", diff)
 	}
+
+	for i := range dataSource.TotalFragments() {
+		data, err := dataSource.ReadFragmentData(i)
+		if err != nil {
+			t.Errorf("ReadFragmentData(%d) error = %v", i, err)
+			continue
+		}
+		frag := gopacket.Fragment(data)
+		if diff := cmp.Diff(wantFragments[i], frag); diff != "" {
+			t.Errorf("ReadFragmentData(%d) mismatch (-want +got):\n%s", i, diff)
+		}
+	}
 }
 
-func TestFragmentOptions(t *testing.T) {
+func TestFragmentedDataSource(t *testing.T) {
 	var (
-		template = defragtest.TemplateFunc(RenderGenericFragment)
+		template = TemplateFunc(RenderGenericFragment)
 		data     = []byte{1, 2, 3, 4, 5}
 	)
 
 	// TestPacketOrdering covers valid uses of WithOrder, and the Example covers
 	// valid uses of WithLayers and WithCaptureTimestamp.
-	var validOptions = []struct {
+	var tests = []struct {
 		description string // Completes the sentence "Testing DataSource() with ...".
-		options     []defragtest.Option
+		options     []Option
 		fragments   []gopacket.Fragment
 	}{
 		{
 			description: "as few fragments as possible",
-			options:     []defragtest.Option{defragtest.WithFragments(1)},
+			options:     []Option{WithFragments(1)},
 			fragments:   []gopacket.Fragment{{1, 2, 3, 4, 5}},
 		},
 		{
 			description: "as many fragments as possible",
-			options:     []defragtest.Option{defragtest.WithFragments(1)},
+			options:     []Option{WithFragments(1)},
 			fragments:   []gopacket.Fragment{{1, 2, 3, 4, 5}},
 		},
 		{
 			description: "exact fragment size",
-			options:     []defragtest.Option{defragtest.WithMaxFragmentSize(5)},
+			options:     []Option{WithMaxFragmentSize(5)},
 			fragments:   []gopacket.Fragment{{1, 2, 3, 4, 5}},
 		},
 		{
 			description: "bigger fragment size",
-			options:     []defragtest.Option{defragtest.WithMaxFragmentSize(6)},
+			options:     []Option{WithMaxFragmentSize(6)},
 			fragments:   []gopacket.Fragment{{1, 2, 3, 4, 5}},
 		},
 		{
 			description: "smaller fragment size",
-			options:     []defragtest.Option{defragtest.WithMaxFragmentSize(4)},
+			options:     []Option{WithMaxFragmentSize(4)},
 			fragments:   []gopacket.Fragment{{1, 2, 3, 4}, {5}},
 		},
 	}
-	t.Run("Valid", func(t *testing.T) {
-		for _, tt := range validOptions {
-			t.Logf("Testing DataSource() with %s", tt.description)
-			dataSource, err := defragtest.DataSource(template, data, tt.options...)
-			if err != nil {
-				t.Errorf("DataSource() failed: %v", err)
-				continue
-			}
-			testDataSourceFragments(t, dataSource, tt.fragments)
+
+	for _, tt := range tests {
+		t.Logf("Testing DataSource() with %s", tt.description)
+		dataSource, err := DataSource(template, data, tt.options...)
+		if err != nil {
+			t.Errorf("DataSource() failed: %v", err)
+			continue
 		}
-	})
+		testDataSourceFragments(t, dataSource, tt.fragments)
+	}
+}
+
+func TestInvalidOptions(t *testing.T) {
+	var (
+		template = TemplateFunc(RenderGenericFragment)
+		data     = []byte{1, 2, 3, 4, 5}
+	)
 
 	var invalidOptions = []struct {
 		description string // Completes the sentence "Testing DataSource() with ...".
-		options     []defragtest.Option
+		options     []Option
 	}{
 		{
 			description: "missing fragment options",
-			options:     []defragtest.Option{},
+			options:     []Option{},
 		},
 		{
 			description: "both Fragments and FragmentSize",
-			options: []defragtest.Option{
-				defragtest.WithFragments(1),
-				defragtest.WithMaxFragmentSize(1),
+			options: []Option{
+				WithFragments(1),
+				WithMaxFragmentSize(1),
 			},
 		},
 		{
 			description: "not enough data for number of fragments",
-			options:     []defragtest.Option{defragtest.WithFragments(6)},
+			options:     []Option{WithFragments(6)},
 		},
 		{
 			description: "negative fragments",
-			options:     []defragtest.Option{defragtest.WithFragments(-1)},
+			options:     []Option{WithFragments(-1)},
 		},
 		{
 			description: "negative fragment size",
-			options:     []defragtest.Option{defragtest.WithMaxFragmentSize(-1)},
+			options:     []Option{WithMaxFragmentSize(-1)},
 		},
 		{
 			description: "an unknown order",
-			options: []defragtest.Option{
-				defragtest.WithOrder(defragtest.Order(3)),
-				defragtest.WithFragments(1), // Must be specified to trigger the unknown order (3).
+			options: []Option{
+				WithOrder(Order(3)),
+				WithFragments(1), // Must be specified to trigger the unknown order (3).
 			},
 		},
 	}
-	t.Run("Invalid", func(t *testing.T) {
-		for _, tt := range invalidOptions {
-			t.Logf("Testing DataSource() with %s", tt.description)
-			_, err := defragtest.DataSource(template, data, tt.options...)
-			if err == nil {
-				t.Errorf("DataSource() succeeded unexpectedly")
-				continue
-			}
-			t.Logf("DataSource() error = %v", err)
+	for _, tt := range invalidOptions {
+		t.Logf("Testing DataSource() with %s", tt.description)
+		_, err := DataSource(template, data, tt.options...)
+		if err == nil {
+			t.Errorf("DataSource() succeeded unexpectedly")
+			continue
 		}
-	})
+		t.Logf("DataSource() error = %v", err)
+	}
 }
