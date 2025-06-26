@@ -306,7 +306,48 @@ func baseLayersForAssociation(srcIP, dstIP net.IP, srdPort, dstPort int, tag uin
 
 // TODO: test retransmission (duplicate chunks).
 
+// TODO: test decoding same packet twice, because the Defragmenter should delete the messageContext after the first time.
+
 // TODO: test TSN wraparound (e.g. TSN=0xFFFFFFFF, TSN=0x00000000).
+
+// We remember that for this test order doesn’t matter because a Defragmenter
+// may receive all chunks out of order and will sort them internally before
+// reassembling them.
+//
+// Reassembly is attempted only when both the B and E chunks are present, and
+// there are enough chunks in between to attempt reassembly.
+//
+// There's no point in testing chunks with the same TSN, as they’re considered
+// duplicates and are ignored by the Defragmenter. This behaviour is already
+// tested in TestRetransmission (also behaves differently).
+func TestInconsistentTSN(t *testing.T) {
+	// To keep test declarations simple, we omit all none essential fields of the
+	// SCTPData chunk, such as PPID, SID, SSN, etc.
+	header := layers.SCTPChunk{
+		Type:         layers.SCTPChunkTypeData,
+		Length:       16,
+		ActualLength: 16,
+	}
+	chunks := []*layers.SCTPData{
+		{SCTPChunk: header, TSN: 1, BeginFragment: true}, // First chunk, B flag set.
+		{SCTPChunk: header, TSN: 2},                      // Second chunk, incremented TSN.
+		{SCTPChunk: header, TSN: 100},                    // Third chunk, TSN too high, which prevents reassembly.
+		{SCTPChunk: header, TSN: 4, EndFragment: true},   // Final chunk, E flag set.
+	}
+
+	var defrag = sctpdefrag.NewDefragmenter()
+	for _, chunk := range chunks {
+		// Use the zero association because this test cares about the TSNs, not about
+		// the associations themselves; associations are just part of the API.
+		_, err := defrag.DefragData(sctpdefrag.Association{}, chunk)
+		if err != nil {
+			// We expect an error because we shouldn't have a chunk with TSN=100 in the range
+			// of 1-4, which is the range of TSNs for the first and last chunks.
+			return
+		}
+	}
+	t.Errorf("DefragData() error = nil, want a non-nil error due to inconsistent TSN")
+}
 
 func testLogger(t *testing.T, level slog.Level) *slog.Logger {
 	w := (*testWriter)(t)

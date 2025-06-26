@@ -279,8 +279,8 @@ func checkDataChunk(data *layers.SCTPData) error {
 	if data.Type != layers.SCTPChunkTypeData {
 		return fmt.Errorf("unexpected chunk type %q", data.Type)
 	}
-	// A DATA chunk has at least 1 byte of payload.
-	if data.ActualLength <= 16 {
+	// A DATA chunk has at least 16 byte of fixed-sized fields.
+	if data.ActualLength < 16 {
 		return fmt.Errorf("malformed chunk header: DATA chunks requires more than %v bytes", data.ActualLength)
 	}
 	// A DATA chunk's actual length includes the padding, if any. As such, it cannot
