@@ -308,8 +308,6 @@ func baseLayersForAssociation(srcIP, dstIP net.IP, srdPort, dstPort int, tag uin
 
 // TODO: test decoding same packet twice, because the Defragmenter should delete the messageContext after the first time.
 
-// TODO: test TSN wraparound (e.g. TSN=0xFFFFFFFF, TSN=0x00000000).
-
 // We remember that for this test order doesn’t matter because a Defragmenter
 // may receive all chunks out of order and will sort them internally before
 // reassembling them.
@@ -349,7 +347,48 @@ func TestInconsistentTSN(t *testing.T) {
 	t.Errorf("DefragData() error = nil, want a non-nil error due to inconsistent TSN")
 }
 
-func testLogger(t *testing.T, level slog.Level) *slog.Logger {
+func TestOverflowingTSN(t *testing.T) {
+	// Let's pick a message that is long enough to be fragmented into several chunks,
+	// yet trivial to fragment manually.
+	var message = []byte{1, 2, 3, 4, 5}
+	// To keep test declarations simple, we omit all none essential fields of the
+	// SCTPData chunk, such as PPID, SID, SSN, etc.
+	header := layers.SCTPChunk{
+		Type:         layers.SCTPChunkTypeData,
+		Length:       17,
+		ActualLength: 20,
+	}
+	chunks := []*layers.SCTPData{
+		{SCTPChunk: header, TSN: 0xfffffffe, UserData: []byte{1}, BeginFragment: true}, // First chunk, B flag set.
+		{SCTPChunk: header, TSN: 0xffffffff, UserData: []byte{2}},                      // Second chunk, highest TSN.
+		{SCTPChunk: header, TSN: 0x00000000, UserData: []byte{3}},                      // Third chunk, TSN wraps around to zero.
+		{SCTPChunk: header, TSN: 0x00000001, UserData: []byte{4}},                      // Fourth chunk, TSN incremented.
+		{SCTPChunk: header, TSN: 0x00000002, UserData: []byte{5}, EndFragment: true},   // Final chunk, E flag set.
+	}
+
+	var defrag = sctpdefrag.NewDefragmenter(sctpdefrag.WithLogger(testLogger(t)))
+	var completed *layers.SCTPData
+	for _, chunk := range chunks {
+		// Use the zero association because this test cares about the TSNs, not about
+		// the associations themselves; associations are just part of the API.
+		var err error
+		completed, err = defrag.DefragData(sctpdefrag.Association{}, chunk)
+		if err != nil {
+			t.Logf("Decoded chunk = %v", gopacket.LayerString(chunk))
+			t.Errorf("DefragData(TSN=%v) error = %v", chunk.TSN, err)
+		}
+	}
+	if completed == nil {
+		t.Fatalf("Defragmenter did not reassemble the message")
+	}
+	// We check that the reassembled message is as expected.
+	if !bytes.Equal(completed.Payload(), message) {
+		diff := bytediff.Diff(completed.Payload(), message)
+		t.Errorf("Reassembly produced the wrong message (BASH-colorized diff, got->want):\n%v\n---PACKET (reassembled)---\n%v", bytediff.BashOutput.String(diff), gopacket.LayerDump(completed))
+	}
+}
+
+func testLogger(t *testing.T) *slog.Logger {
 	w := (*testWriter)(t)
 	h := slog.NewTextHandler(w, &slog.HandlerOptions{Level: slog.LevelDebug})
 	return slog.New(h)

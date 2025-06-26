@@ -468,10 +468,15 @@ func (m *messageContext) Push(data *layers.SCTPData) (more bool, err error) {
 	if !m.Fragments.EndFragment {
 		return true, nil
 	}
+	// We know these TSN fields are valid because we've already checked the
+	// BeginFragment and EndFragment flags, which are set in tandem with these
+	// fields.
+	beginTSN := m.Fragments.expandTSN(m.Fragments.BeginTSN)
+	endTSN := m.Fragments.expandTSN(m.Fragments.EndTSN)
 	// Consider two sequential fragments with TSNs A and B (A = B - 1), then the
 	// delta between them is 1, but there are two fragments in the list.
-	n := m.Fragments.deltaTSN(m.Fragments.EndTSN, m.Fragments.BeginTSN)
-	if int(n)+1 != len(m.Fragments.List) {
+	delta := endTSN - beginTSN + 1
+	if delta != int64(len(m.Fragments.List)) {
 		return true, nil
 	}
 	// If we get here, we seem to have all fragments of the message, so we can
@@ -669,7 +674,9 @@ func (l *fragmentList) Defragment(userData []byte) (n int, err error) {
 	// We may have observed fragments out-of-order, so we must sort them by TSN
 	// before reassembling them, accounting for TSN wraparound.
 	sort.Slice(l.List, func(i, j int) bool {
-		return l.deltaTSN(l.List[i].TSN, l.List[j].TSN) < 0
+		iTSN := l.expandTSN(l.List[i].TSN)
+		jTSN := l.expandTSN(l.List[j].TSN)
+		return iTSN < jTSN
 	})
 
 	// We also want to ensure that the fragments are indeed strictly sequential, as
@@ -677,8 +684,9 @@ func (l *fragmentList) Defragment(userData []byte) (n int, err error) {
 	// consecutive. For example, we may have missed a fragment but still called this
 	// function.
 	for i := 1; i < len(l.List); i++ {
-		prev, curr := l.List[i-1].TSN, l.List[i].TSN
-		if l.deltaTSN(prev, curr) != -1 {
+		prev := l.expandTSN(l.List[i-1].TSN)
+		curr := l.expandTSN(l.List[i].TSN)
+		if prev+1 != curr {
 			return 0, errMissingFragments
 		}
 	}
@@ -716,36 +724,25 @@ func (l *fragmentList) TotalBytes() (sum int) {
 	return sum
 }
 
-// DeltaTSN calculates the difference between two TSNs, taking into account
-// wraparound. It returns the difference as an int64, which can be negative if
-// the first (left) TSN is greater than the second (right).
+// ExpandTSN expands a TSN from a 32-bit unsigned integer to a 64-bit signed
+// integer, accounting for wraparound based on the first fragment's TSN.
 //
-// The difference between two uint32 values can be at most (2^32 - 1), which is
-// the maximum value of uint32, so we can safely use int64 (though not int) to
-// represent that difference.
-//
-// Wraparound occurs when a TSN is less than the list's beginning TSN, which is
-// the TSN of the first fragment in the list. The SCTP specification caps message
-// size below 2^32.
-func (l *fragmentList) deltaTSN(left, right uint32) int64 {
-	// TODO: test this function once.
-	if left == right {
-		return 0
+// Only call this function when the first fragment has been seen, otherwise
+// comparing TSNs is not a valid operation. To fail early when developers try to
+// expand a TSN before the first fragment has been seen, this function panics.
+func (l *fragmentList) expandTSN(tsn uint32) int64 {
+	if !l.BeginFragment {
+		panic("cannot expand TSN before the first fragment has been seen")
 	}
-	// To compare TSNs correctly accounting for wraparound, we expand them from
-	// unsigned 32-bits to signed 64-bits.
-	first, second := int64(left), int64(right)
-	if left < l.BeginTSN {
-		// We add 1 to the BeginTSN to account for the fact that 0 is a valid TSN, so we
-		// need to shift the range of TSNs to start from 1.
-		first += int64(l.BeginTSN) + 1
+	// We deduce the given TSN must have been wrapped around if it is less than the
+	// TSN of the first (Begin) fragment in the list. This is because TSNs are
+	// strictly sequential, and the first fragment's TSN is the lowest in the list.
+	if tsn < l.BeginTSN {
+		// We must add 1 to account for the fact that 0 is a valid TSN, so a TSN that
+		// overflows to zero is actually the (0xffffffff + 1) TSN.
+		return int64(tsn) + math.MaxUint32 + 1
 	}
-	if right < l.BeginTSN {
-		// We add 1 to the BeginTSN to account for the fact that 0 is a valid TSN, so we
-		// need to shift the range of TSNs to start from 1.
-		second += int64(l.BeginTSN) + 1
-	}
-	return first - second
+	return int64(tsn)
 }
 
 func (l *fragmentList) LogValue() slog.Value {
