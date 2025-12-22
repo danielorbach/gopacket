@@ -171,6 +171,10 @@ func decodeSCTPDataChunk(data []byte) (SCTPChunk, error) {
 	actual := roundUpToNearest4(int(length))
 	ct := SCTPChunkType(data[0])
 
+	if len(data) < actual {
+		return SCTPChunk{}, errors.New("invalid SCTP chunk data: not enough bytes")
+	}
+
 	return SCTPChunk{
 		Type:         ct,
 		Flags:        data[1],
